@@ -1,0 +1,47 @@
+{
+  "expo": {
+    "name": "VELORA",
+    "slug": "velora-rental",
+    "scheme": "velora",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "backgroundColor": "#FFFFFF",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.velora.rental"
+    },
+    "android": {
+      "package": "com.velora.rental",
+      "adaptiveIcon": {
+        "backgroundColor": "#F4C728",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "VELORA needs access to your photos so you can add pictures when listing a car.",
+          "cameraPermission": "VELORA needs access to your camera so you can take pictures when listing a car."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "VELORA uses your location so you can set your pickup city with one tap."
+        }
+      ],
+      "expo-font",
+      "expo-asset"
+    ]
+  }
+}

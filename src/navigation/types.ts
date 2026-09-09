@@ -1,0 +1,89 @@
+import { NavigatorScreenParams } from '@react-navigation/native';
+import { RentalMode } from '../types';
+
+export type AuthStackParamList = {
+  Login: undefined;
+  Signup: undefined;
+  ForgotPassword: undefined;
+};
+
+export type MainTabParamList = {
+  HomeTab: undefined;
+  MessagesTab: undefined;
+  RentsTab: undefined;
+  ProfileTab: undefined;
+};
+
+export interface BookingDraft {
+  carId: string;
+  rentalMode: RentalMode;
+  pickupLocation: string;
+  dropoffLocation: string;
+  pickupDate: string;
+  dropoffDate: string;
+  pickupTime: string;
+  dropoffTime: string;
+  days: number;
+  subtotal: number;
+  taxes: number;
+  serviceFee: number;
+  total: number;
+}
+
+export interface SignedBookingDraft extends BookingDraft {
+  agreementSignedBy: string;
+  agreementSignedAt: string;
+}
+
+export type RootStackParamList = {
+  // Typed as a real nested-navigator param (not `undefined`) so every
+  // `navigation.navigate('Main', { screen: 'SomeTab' })` call site is
+  // actually type-checked against MainTabParamList instead of needing an
+  // `as never` cast to silence the mismatch. See React Navigation's
+  // NavigatorScreenParams helper -- this is its documented pattern for
+  // nesting a tab navigator inside a stack navigator.
+  Main: NavigatorScreenParams<MainTabParamList> | undefined;
+  CarDetails: { carId: string };
+  Booking: { carId: string };
+  Agreement: BookingDraft;
+  Payment: SignedBookingDraft;
+  BookingConfirmation: { bookingId: string };
+  Filter: undefined;
+  EditProfile: undefined;
+  Favorites: undefined;
+  ConversationDetail: {
+    conversationId?: string;
+    // Full info to start a brand-new thread when one doesn't exist yet —
+    // provided by whichever screen already knows both parties (Car
+    // Details, a public profile, Booking Details). renterId/renterName/
+    // renterAvatar are optional and fall back to the current user when
+    // omitted, which preserves the original behavior of every call site
+    // that only ever had a renter opening a fresh thread; they're required
+    // when the OWNER is the one starting/replying to a thread with a
+    // customer, since the current user is the owner in that case, not the
+    // renter.
+    carId?: string;
+    carName?: string;
+    renterId?: string;
+    renterName?: string;
+    renterAvatar?: string;
+    ownerId?: string;
+    ownerName?: string;
+    ownerAvatar?: string;
+  };
+  OwnerAddCar: { carId?: string } | undefined;
+  OwnerBookingRequests: undefined;
+  OwnerVerification: undefined;
+  OwnerProfile: { ownerId: string; carId?: string; carName?: string };
+  // A pushed, dedicated screen for "Home -> tap a brand" (see BrandCarsScreen
+  // for why this replaced the old in-place Home filter).
+  BrandCars: { brandId: string };
+  CustomerProfile: { userId: string; carId?: string; carName?: string };
+  BookingDetails: { bookingId: string };
+  LocationPicker: undefined;
+  Notifications: undefined;
+  PaymentMethods: undefined;
+  HelpSupport: undefined;
+  Legal: { kind: 'privacy' | 'terms' };
+  Review: { bookingId: string; carId: string };
+};
