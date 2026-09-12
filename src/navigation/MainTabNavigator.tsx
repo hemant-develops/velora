@@ -31,9 +31,15 @@ const OUTLINE_ICONS: Record<keyof MainTabParamList, keyof typeof Ionicons.glyphM
 
 // Renters and Rental Owners are genuinely different apps, not the same four
 // tabs with different content underneath: a renter gets the full browse /
-// search / message / rent experience, while an owner account is kept to
-// exactly what an owner needs — their own listings and their own profile —
-// so the two account types are never mixed together in the same navigation.
+// search / rent experience, while an owner account is kept close to what an
+// owner needs -- their own listings, their conversations with renters, and
+// their own profile. Messages IS included for owners (unlike Home/browse) --
+// an owner has no way to run their side of the Owner<->Customer relationship
+// (answering a renter's question before pickup, coordinating handover,
+// resolving an issue) without a persistent way to see every conversation,
+// and MessagesScreen/MessagesContext/ConversationDetailScreen already fully
+// support the owner role end-to-end -- this was simply never mounted for
+// them.
 export const MainTabNavigator: React.FC = () => {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
@@ -88,6 +94,7 @@ export const MainTabNavigator: React.FC = () => {
       {isOwner ? (
         <>
           <Tab.Screen name="RentsTab" component={MyRentsScreen} options={{ title: 'Listings' }} />
+          <Tab.Screen name="MessagesTab" component={MessagesScreen} options={{ title: 'Messages' }} />
           <Tab.Screen name="ProfileTab" component={ProfileScreen} options={{ title: 'Profile' }} />
         </>
       ) : (

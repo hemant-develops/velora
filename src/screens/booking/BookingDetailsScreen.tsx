@@ -1,5 +1,5 @@
 import React from 'react';
-import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import { RootStackParamList } from '../../navigation/types';
@@ -8,15 +8,26 @@ import { ScreenHeader } from '../../components/ScreenHeader';
 import { EmptyState } from '../../components/EmptyState';
 import { PrimaryButton } from '../../components/PrimaryButton';
 import { FallbackImage } from '../../components/FallbackImage';
+import { BookingDetailsSkeleton } from '../../components/SkeletonLoader';
 import { useAuth } from '../../context/AuthContext';
 import { useCars } from '../../context/CarsContext';
 import { useBookings } from '../../context/BookingsContext';
 import { useReviews } from '../../context/ReviewsContext';
 import { brands } from '../../data/brands';
 import { formatCurrency, formatDate, formatShortDate } from '../../utils/format';
-import { BookingStatus } from '../../types';
+import { BookingStatus, PaymentStatus } from '../../types';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'BookingDetails'>;
+
+// M10 -- paymentStatus is optional (bookings made before it existed), and a
+// missing value reads as 'unpaid' everywhere, matching how PaymentScreen/
+// BookingConfirmation already treat it.
+const PAYMENT_META: Record<PaymentStatus, { label: string; color: string; bg: string }> = {
+  unpaid: { label: 'Due at Pickup', color: colors.warning, bg: colors.warningBg },
+  processing: { label: 'Processing', color: colors.info, bg: colors.infoBg },
+  paid: { label: 'Paid', color: colors.success, bg: colors.successBg },
+  failed: { label: 'Payment Failed', color: colors.danger, bg: colors.dangerBg },
+};
 
 const STATUS_META: Record<BookingStatus, { label: string; color: string; bg: string; icon: keyof typeof Ionicons.glyphMap; note: string }> = {
   pending: { label: 'Pending', color: colors.warning, bg: colors.warningBg, icon: 'time-outline', note: 'Waiting for the owner to confirm this request.' },
@@ -30,10 +41,36 @@ const STATUS_META: Record<BookingStatus, { label: string; color: string; bg: str
 export const BookingDetailsScreen: React.FC<Props> = ({ route, navigation }) => {
   const { user, getUserById } = useAuth();
   const { getCarById } = useCars();
-  const { getBookingById, confirmBooking, rejectBooking, cancelBooking, updateStatus } = useBookings();
+  const { getBookingById, confirmBooking, rejectBooking, cancelBooking, updateStatus, isLoading: bookingsLoading } = useBookings();
   const { hasReviewedBooking, getReviewForBooking } = useReviews();
 
-  const booking = getBookingById(route.params.bookingId);
+  // BookingsContext reads its store from Supabase asynchronously -- on a
+  // cold start (e.g. a push notification/deep link landing directly here)
+  // this previously showed "Booking not found" for a split second before the
+  // real data had loaded, exactly the same class of flash HomeScreen/
+  // CarDetailsScreen already guarded against with their own `isLoaded`
+  // checks. The genuine not-found/no-access behavior below is unchanged
+  // once loading has actually finished.
+  if (bookingsLoading) {
+    return (
+      <View style={{ flex: 1, backgroundColor: colors.background }}>
+        <ScreenHeader title="Booking Details" onBack={() => navigation.goBack()} />
+        <BookingDetailsSkeleton />
+      </View>
+    );
+  }
+
+  const rawBooking = getBookingById(route.params.bookingId);
+  // Final-verification fix -- getBookingById(id) has no participant check of
+  // its own. Every real entry point (My Rentals, Booking Requests) only ever
+  // links here with the current user's own booking ids, but nothing
+  // previously stopped a foreign/guessed bookingId from rendering someone
+  // else's full booking (dates, price, the other party's name) here. Treat a
+  // booking that isn't this user's as not found, same as a missing one.
+  const booking =
+    rawBooking && user && (rawBooking.renterId === user.id || getCarById(rawBooking.carId)?.ownerId === user.id)
+      ? rawBooking
+      : undefined;
   const car = booking ? getCarById(booking.carId) : undefined;
 
   if (!user || !booking) {
@@ -50,10 +87,28 @@ export const BookingDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
   // always sees the Customer-facing layout for their own bookings, and a
   // real renter always sees the Owner-facing layout for theirs.
   const isOwnerView = !!car && car.ownerId === user.id;
+  // getUserById(booking.renterId) can only ever resolve for the CURRENT
+  // signed-in user under real Supabase Auth's RLS (profiles_select_own:
+  // id = auth.uid() only) -- for an owner looking up their customer, it will
+  // always come back undefined. booking.renterName/renterAvatar (a snapshot
+  // taken when the renter created the booking -- see
+  // BookingsContext.createBooking) is what actually stays available here,
+  // so it takes priority; the getUserById() lookup is kept only as a
+  // fallback for bookings created before that snapshot existed.
   const customer = getUserById(booking.renterId);
+  const customerName = booking.renterName ?? customer?.name ?? 'Customer';
+  const customerAvatar = booking.renterAvatar ?? customer?.avatar;
   const owner = car ? getUserById(car.ownerId) : undefined;
   const brandName = car ? brands.find((b) => b.id === car.brandId)?.name : undefined;
   const meta = STATUS_META[booking.status];
+  const paymentStatus: PaymentStatus = booking.paymentStatus ?? 'unpaid';
+  const paymentMeta = PAYMENT_META[paymentStatus];
+  // M10 -- payment state and cancellation state are deliberately separate
+  // (see BookingsContext.cancelBooking's own comment): cancelling never
+  // auto-refunds here, since there's no real gateway configured to reverse
+  // a charge through. Surface that plainly instead of pretending nothing
+  // needs following up.
+  const showRefundNote = booking.status === 'cancelled' && paymentStatus === 'paid';
   const alreadyReviewed = hasReviewedBooking(booking.id);
   const existingReview = getReviewForBooking(booking.id);
 
@@ -72,8 +127,8 @@ export const BookingDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
       carId: car.id,
       carName: car.name,
       renterId: booking.renterId,
-      renterName: customer?.name ?? 'Customer',
-      renterAvatar: customer?.avatar,
+      renterName: customerName,
+      renterAvatar: customerAvatar,
       ownerId: user.id,
       ownerName: user.name,
       ownerAvatar: user.avatar,
@@ -91,17 +146,62 @@ export const BookingDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
     });
   };
 
+  // Owner<->Customer relationship, dispute step -- a clear "something wrong
+  // with this booking?" entry point on both sides, right on the trip that's
+  // actually affected, routing into the same real Report flow already used
+  // from a listing/profile/conversation (see ReportsContext/ReportScreen).
+  // Reports a 'user' target (the counterpart on THIS booking) rather than a
+  // new 'booking' targetKind, since the underlying local reports table has
+  // no booking-shaped record to attach to and adding one is out of scope for
+  // a UI-only pass -- the booking id is still included in the label so
+  // whoever reviews reports knows exactly which trip it's about.
+  const onReportIssue = () => {
+    if (isOwnerView) {
+      navigation.navigate('Report', {
+        targetKind: 'user',
+        targetId: booking.renterId,
+        targetLabel: `${customerName} — Booking ${booking.id}`,
+      });
+    } else if (owner) {
+      navigation.navigate('Report', {
+        targetKind: 'user',
+        targetId: owner.id,
+        targetLabel: `${owner.name} — Booking ${booking.id}`,
+      });
+    }
+  };
+
+  // Every action below awaits its BookingsContext call and surfaces
+  // `result.error` via Alert when the transition was refused (see
+  // canTransition/VALID_TRANSITIONS in BookingsContext) -- same
+  // success/error-surfacing convention already used elsewhere in the app
+  // (e.g. ProfileScreen.onToggleRole), so a stale screen or a
+  // no-longer-valid action always gets a clear reason instead of silently
+  // doing nothing.
   const onConfirm = () => {
-    Alert.alert('Confirm Booking', `Confirm this booking for ${customer?.name ?? 'this customer'}?`, [
+    Alert.alert('Confirm Booking', `Confirm this booking for ${customerName}?`, [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Confirm', onPress: () => confirmBooking(booking.id) },
+      {
+        text: 'Confirm',
+        onPress: async () => {
+          const result = await confirmBooking(booking.id);
+          if (!result.success && result.error) Alert.alert('Unable to Confirm', result.error);
+        },
+      },
     ]);
   };
 
   const onReject = () => {
     Alert.alert('Reject Booking', 'This will decline the request and notify the customer. This cannot be undone.', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Reject', style: 'destructive', onPress: () => rejectBooking(booking.id) },
+      {
+        text: 'Reject',
+        style: 'destructive',
+        onPress: async () => {
+          const result = await rejectBooking(booking.id);
+          if (!result.success && result.error) Alert.alert('Unable to Reject', result.error);
+        },
+      },
     ]);
   };
 
@@ -111,7 +211,10 @@ export const BookingDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
       {
         text: 'Cancel Booking',
         style: 'destructive',
-        onPress: () => cancelBooking(booking.id, isOwnerView ? 'owner' : 'renter'),
+        onPress: async () => {
+          const result = await cancelBooking(booking.id, isOwnerView ? 'owner' : 'renter');
+          if (!result.success && result.error) Alert.alert('Unable to Cancel', result.error);
+        },
       },
     ]);
   };
@@ -119,14 +222,26 @@ export const BookingDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
   const onMarkActive = () => {
     Alert.alert('Mark as Active', 'Mark this rental as active now?', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Mark Active', onPress: () => updateStatus(booking.id, 'active') },
+      {
+        text: 'Mark Active',
+        onPress: async () => {
+          const result = await updateStatus(booking.id, 'active');
+          if (!result.success && result.error) Alert.alert('Unable to Update', result.error);
+        },
+      },
     ]);
   };
 
   const onMarkCompleted = () => {
     Alert.alert('Mark as Completed', 'Mark this rental as completed?', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Mark Completed', onPress: () => updateStatus(booking.id, 'completed') },
+      {
+        text: 'Mark Completed',
+        onPress: async () => {
+          const result = await updateStatus(booking.id, 'completed');
+          if (!result.success && result.error) Alert.alert('Unable to Update', result.error);
+        },
+      },
     ]);
   };
 
@@ -164,6 +279,21 @@ export const BookingDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
           <DetailRow label="Pickup Location" value={booking.pickupLocation || car?.location || 'Not specified'} />
           <View style={styles.divider} />
           <DetailRow label="Total Amount" value={formatCurrency(booking.total)} bold />
+          <View style={styles.paymentRow}>
+            <Text style={styles.detailLabel}>Payment</Text>
+            <View style={[styles.paymentBadge, { backgroundColor: paymentMeta.bg }]}>
+              <Text style={[styles.paymentBadgeText, { color: paymentMeta.color }]}>{paymentMeta.label}</Text>
+            </View>
+          </View>
+          {showRefundNote ? (
+            <View style={styles.refundNote}>
+              <Ionicons name="information-circle-outline" size={15} color={colors.textSecondary} />
+              <Text style={styles.refundNoteText}>
+                This booking was paid before it was cancelled. VELORA has no payment gateway connected yet, so refunds
+                for cancelled bookings are handled outside the app for now — message the {isOwnerView ? 'customer' : 'owner'} to arrange one.
+              </Text>
+            </View>
+          ) : null}
         </View>
 
         {isOwnerView ? (
@@ -171,13 +301,18 @@ export const BookingDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
             <Text style={styles.sectionTitle}>Customer</Text>
             <View style={[styles.card, shadows.sm]}>
               <View style={styles.personRow}>
-                <FallbackImage uri={customer?.avatar} style={styles.avatar} iconSize={20} />
+                <FallbackImage uri={customerAvatar} style={styles.avatar} iconSize={20} />
                 <View style={{ flex: 1, marginLeft: spacing.sm }}>
-                  <Text style={typography.titleLg} numberOfLines={1}>{customer?.name ?? 'Customer'}</Text>
+                  <Text style={typography.titleLg} numberOfLines={1}>{customerName}</Text>
                   {customer?.location ? <Text style={styles.carMeta}>{customer.location}</Text> : null}
                 </View>
               </View>
               <View style={styles.divider} />
+              {/* Email/phone/bio/member-since are only ever available here
+                  when getUserById() actually resolved -- i.e. never, for any
+                  renter but the current signed-in user, under real Supabase
+                  Auth's RLS. They correctly fall back to "Not provided" /
+                  are omitted rather than showing stale or fabricated data. */}
               <DetailRow label="Email" value={customer?.email || 'Not provided'} />
               <DetailRow label="Phone" value={customer?.phone || 'Not provided'} />
               {customer?.createdAt ? <DetailRow label="Member Since" value={formatDate(customer.createdAt)} /> : null}
@@ -254,6 +389,12 @@ export const BookingDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
               ) : null}
             </>
           )}
+          {(isOwnerView || owner) ? (
+            <Pressable style={styles.reportRow} onPress={onReportIssue} hitSlop={6}>
+              <Ionicons name="flag-outline" size={15} color={colors.textTertiary} />
+              <Text style={styles.reportRowText}>Report an issue with this trip</Text>
+            </Pressable>
+          ) : null}
         </View>
       </View>
     </ScrollView>
@@ -285,4 +426,11 @@ const styles = StyleSheet.create({
   detailValue: { ...typography.titleMd, color: colors.textPrimary, flexShrink: 1, textAlign: 'right' },
   reviewedRow: { flexDirection: 'row', alignItems: 'center' },
   reviewedText: { ...typography.bodySm, color: colors.textSecondary, marginLeft: 6 },
+  paymentRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: spacing.xs },
+  paymentBadge: { borderRadius: radii.pill, paddingHorizontal: 10, paddingVertical: 3 },
+  paymentBadgeText: { ...typography.caption, fontWeight: '700' as const },
+  refundNote: { flexDirection: 'row', alignItems: 'flex-start', backgroundColor: colors.surface, borderRadius: radii.md, padding: spacing.sm, marginTop: spacing.sm },
+  refundNoteText: { ...typography.bodySm, color: colors.textSecondary, marginLeft: 6, flex: 1, lineHeight: 18 },
+  reportRow: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', marginTop: spacing.md, paddingVertical: spacing.xs },
+  reportRowText: { ...typography.bodySm, color: colors.textTertiary, marginLeft: 6 },
 });

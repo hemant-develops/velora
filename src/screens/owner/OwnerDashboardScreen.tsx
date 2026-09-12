@@ -8,10 +8,13 @@ import { useAuth } from '../../context/AuthContext';
 import { useCars } from '../../context/CarsContext';
 import { useBookings } from '../../context/BookingsContext';
 import { EmptyState } from '../../components/EmptyState';
+import { OwnerDashboardSkeleton } from '../../components/SkeletonLoader';
 import { Rating } from '../../components/Rating';
 import { FallbackImage } from '../../components/FallbackImage';
 import { PrimaryButton } from '../../components/PrimaryButton';
 import { formatCurrency, formatShortDate } from '../../utils/format';
+import { dateRangesOverlap } from '../../utils/dateRange';
+import { getCarQuantity } from '../../utils/inventory';
 import { showToast } from '../../utils/toast';
 import { useAppNavigation, useTabBarClearance } from '../../navigation/hooks';
 import { AppUser, Booking, BookingStatus, Car } from '../../types';
@@ -37,8 +40,8 @@ export const OwnerDashboardScreen: React.FC = () => {
   const tabBarClearance = useTabBarClearance();
   const { user, getUserById } = useAuth();
   const navigation = useAppNavigation();
-  const { getCarsByOwner, updateOwnerCar, removeOwnerCar } = useCars();
-  const { getBookingsForCars } = useBookings();
+  const { getCarsByOwner, updateOwnerCar, removeOwnerCar, isLoaded: carsLoaded } = useCars();
+  const { getBookingsForCars, isLoading: bookingsLoading } = useBookings();
   const [tab, setTab] = useState<TabKey>('listings');
 
   const myCars = useMemo(() => (user ? getCarsByOwner(user.id) : []), [user, getCarsByOwner]);
@@ -67,9 +70,44 @@ export const OwnerDashboardScreen: React.FC = () => {
   // at all, without ever disabling/hiding the owner's account itself.
   const allCarsInactive = myCars.length > 0 && myCars.every((c) => c.isActive === false);
 
+  // "Booked" on the dashboard summary is deliberately date-independent (a
+  // listing here isn't scoped to any particular date range the way the
+  // booking flow is) -- it's a snapshot of how many of this car's units are
+  // held by a pending/upcoming/active booking covering TODAY specifically,
+  // which is the one date that always makes sense to show at a glance.
+  const todayIso = useMemo(() => new Date().toISOString(), []);
+  const getBookedNowCount = (carId: string) =>
+    requests.filter(
+      (r) =>
+        r.carId === carId &&
+        (r.status === 'pending' || r.status === 'upcoming' || r.status === 'active') &&
+        dateRangesOverlap(r.pickupDate, r.dropoffDate, todayIso, todayIso),
+    ).length;
+
+  // M10 -- lightweight owner insights, all derived from data already loaded
+  // above (myCars/requests) -- no new store, no new service, and nothing
+  // beyond what the dashboard already computes for its other tabs.
+  const avgBookingValue = completedBookings.length > 0 ? Math.round(totalEarnings / completedBookings.length) : 0;
+  const totalUnits = useMemo(() => myCars.reduce((sum, c) => sum + getCarQuantity(c), 0), [myCars]);
+  const bookedUnitsNow = useMemo(
+    () => myCars.reduce((sum, c) => sum + getBookedNowCount(c.id), 0),
+    [myCars, requests, todayIso],
+  );
+  const occupancyPercent = totalUnits > 0 ? Math.round((bookedUnitsNow / totalUnits) * 100) : 0;
+
   const onToggleCarActive = async (car: Car, next: boolean) => {
-    await updateOwnerCar(car.id, { isActive: next });
-    showToast(next ? 'Car is now visible to users' : 'Car hidden from users');
+    // MULTI-DEVICE MIGRATION -- updateOwnerCar now writes to Supabase and
+    // can genuinely throw (a network hiccup). Without this try/catch that
+    // was an unhandled promise rejection with no feedback -- the switch
+    // would look like it toggled (or not) with no explanation either way.
+    try {
+      await updateOwnerCar(car.id, { isActive: next });
+      showToast(next ? 'Car is now visible to users' : 'Car hidden from users');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      console.log(`VELORA_TOGGLE_CAR_ACTIVE_FAILED: ${message}`);
+      Alert.alert("Couldn't update this listing", 'Please check your connection and try again.');
+    }
   };
 
   // Every booking references its car only by carId (car.ownerId is how the
@@ -97,11 +135,41 @@ export const OwnerDashboardScreen: React.FC = () => {
     }
     Alert.alert('Remove Listing', `Remove ${car.name} from your listings? This cannot be undone.`, [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Remove', style: 'destructive', onPress: () => removeOwnerCar(car.id) },
+      {
+        text: 'Remove',
+        style: 'destructive',
+        onPress: () => {
+          // MULTI-DEVICE MIGRATION -- removeOwnerCar now deletes from
+          // Supabase and can genuinely throw (a network hiccup). Without
+          // this catch that was an unhandled promise rejection with no
+          // feedback -- the listing would appear to still be there with no
+          // explanation why "Remove" didn't seem to work.
+          removeOwnerCar(car.id).catch((err: unknown) => {
+            const message = err instanceof Error ? err.message : 'Unknown error';
+            console.log(`VELORA_REMOVE_CAR_FAILED: ${message}`);
+            Alert.alert("Couldn't remove this listing", 'Please check your connection and try again.');
+          });
+        },
+      },
     ]);
   };
 
   if (!user) return null;
+
+  // M10 hardening: wait for CarsContext/BookingsContext to finish hydrating
+  // from Supabase before deciding which dashboard view to show. Without
+  // this, an owner who already has listings could see `myCars.length === 0`
+  // for one frame (before CarsContext loads) and briefly flash the "list
+  // your first car" onboarding view instead of their real dashboard --
+  // mirrors the same isLoaded/isLoading gate HomeScreen and MyRentsScreen
+  // already use for the identical reason.
+  if (!carsLoaded || bookingsLoading) {
+    return (
+      <View style={{ flex: 1, backgroundColor: colors.background }}>
+        <OwnerDashboardSkeleton topInset={insets.top} />
+      </View>
+    );
+  }
 
   // A brand-new owner account (verified but hasn't listed a single car yet)
   // gets a dedicated onboarding view instead of the full tabbed dashboard —
@@ -223,6 +291,7 @@ export const OwnerDashboardScreen: React.FC = () => {
           renderItem={({ item }) => (
             <ListingCard
               car={item}
+              bookedNow={getBookedNowCount(item.id)}
               onEdit={() => navigation.navigate('OwnerAddCar', { carId: item.id })}
               onRemove={() => onRemoveCar(item)}
               onToggleActive={(next) => onToggleCarActive(item, next)}
@@ -277,6 +346,27 @@ export const OwnerDashboardScreen: React.FC = () => {
             </View>
           }
           ListHeaderComponentStyle={{ marginBottom: spacing.md }}
+          ListFooterComponent={
+            completedBookings.length > 0 ? (
+              <View style={styles.insightsSection}>
+                <Text style={styles.insightsSectionTitle}>Insights</Text>
+                <View style={styles.insightsRow}>
+                  <View style={[styles.insightCard, shadows.sm]}>
+                    <Text style={styles.insightValue}>{completedBookings.length}</Text>
+                    <Text style={styles.insightLabel}>Completed Rentals</Text>
+                  </View>
+                  <View style={[styles.insightCard, shadows.sm]}>
+                    <Text style={styles.insightValue} numberOfLines={1}>{formatCurrency(avgBookingValue)}</Text>
+                    <Text style={styles.insightLabel}>Avg. per Rental</Text>
+                  </View>
+                  <View style={[styles.insightCard, shadows.sm, { marginRight: 0 }]}>
+                    <Text style={styles.insightValue}>{occupancyPercent}%</Text>
+                    <Text style={styles.insightLabel}>Fleet Occupancy Now</Text>
+                  </View>
+                </View>
+              </View>
+            ) : null
+          }
           renderItem={({ item }) => {
             const car = myCars.find((c) => c.id === item.carId);
             return (
@@ -307,15 +397,18 @@ export const OwnerDashboardScreen: React.FC = () => {
   );
 };
 
-const ListingCard: React.FC<{ car: Car; onEdit: () => void; onRemove: () => void; onToggleActive: (next: boolean) => void }> = ({
-  car,
-  onEdit,
-  onRemove,
-  onToggleActive,
-}) => {
+const ListingCard: React.FC<{
+  car: Car;
+  bookedNow: number;
+  onEdit: () => void;
+  onRemove: () => void;
+  onToggleActive: (next: boolean) => void;
+}> = ({ car, bookedNow, onEdit, onRemove, onToggleActive }) => {
   // undefined/true both read as "Active" — see the Car.isActive comment in
   // types/index.ts for why missing means visible, not hidden.
   const isActive = car.isActive !== false;
+  const totalQuantity = getCarQuantity(car);
+  const availableNow = Math.max(totalQuantity - bookedNow, 0);
   return (
     <View style={[styles.carRow, shadows.sm]}>
       <View style={styles.carRowTop}>
@@ -341,6 +434,24 @@ const ListingCard: React.FC<{ car: Car; onEdit: () => void; onRemove: () => void
           <Pressable onPress={onRemove} hitSlop={8} accessibilityLabel="Remove listing">
             <Ionicons name="trash-outline" size={20} color={colors.danger} />
           </Pressable>
+        </View>
+      </View>
+      <View style={styles.inventoryRow}>
+        <View style={styles.inventoryStat}>
+          <Text style={styles.inventoryValue}>{totalQuantity}</Text>
+          <Text style={styles.inventoryLabel}>Total</Text>
+        </View>
+        <View style={styles.inventoryDivider} />
+        <View style={styles.inventoryStat}>
+          <Text style={styles.inventoryValue}>{bookedNow}</Text>
+          <Text style={styles.inventoryLabel}>Booked</Text>
+        </View>
+        <View style={styles.inventoryDivider} />
+        <View style={styles.inventoryStat}>
+          <Text style={[styles.inventoryValue, { color: availableNow > 0 ? colors.success : colors.danger }]}>
+            {availableNow}
+          </Text>
+          <Text style={styles.inventoryLabel}>Available</Text>
         </View>
       </View>
       <View style={styles.activeRow}>
@@ -370,7 +481,10 @@ const BookingRequestCard: React.FC<{
 }> = ({ booking, car, customer, onPress }) => {
   const meta = STATUS_META[booking.status];
   return (
-    <Pressable style={[styles.requestCard, shadows.sm]} onPress={onPress}>
+    <Pressable
+      style={({ pressed }) => [styles.requestCard, shadows.sm, pressed ? styles.requestCardPressed : undefined]}
+      onPress={onPress}
+    >
       <View style={styles.requestTopRow}>
         <FallbackImage uri={car?.images[0]} style={styles.requestCarImage} />
         <View style={{ flex: 1, marginLeft: spacing.sm }}>
@@ -386,8 +500,14 @@ const BookingRequestCard: React.FC<{
       <View style={styles.divider} />
 
       <View style={styles.customerRow}>
-        <FallbackImage uri={customer?.avatar} style={styles.customerAvatar} iconSize={16} />
-        <Text style={styles.customerName} numberOfLines={1}>{customer?.name ?? 'Customer'}</Text>
+        {/* booking.renterName/renterAvatar (set at booking creation -- see
+            BookingsContext.createBooking) take priority over the `customer`
+            lookup: under real Supabase Auth's RLS, getUserById() for anyone
+            but the signed-in user always resolves to undefined, so for an
+            owner looking at a customer's booking, the snapshot on the
+            booking itself is the only reliable source. */}
+        <FallbackImage uri={booking.renterAvatar ?? customer?.avatar} style={styles.customerAvatar} iconSize={16} />
+        <Text style={styles.customerName} numberOfLines={1}>{booking.renterName ?? customer?.name ?? 'Customer'}</Text>
       </View>
 
       <Text style={styles.requestDates}>
@@ -469,6 +589,9 @@ const styles = StyleSheet.create({
   categoryTagText: { ...typography.caption, color: colors.textSecondary, fontSize: 10, letterSpacing: 0.5 },
   price: { ...typography.titleMd, color: colors.textPrimary, marginTop: 4 },
   requestCard: { backgroundColor: colors.card, borderRadius: radii.lg, padding: spacing.md, marginBottom: spacing.md },
+  // Same cheap opacity-dip press feedback as CarCard/RentalCard -- no
+  // Animated API, just Pressable's own per-press style function.
+  requestCardPressed: { opacity: 0.92 },
   requestTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   statusBadge: { flexDirection: 'row', alignItems: 'center', borderRadius: radii.pill, paddingHorizontal: 8, paddingVertical: 3 },
   statusBadgeText: { ...typography.caption, marginLeft: 4, fontWeight: '600' as const },
@@ -482,6 +605,12 @@ const styles = StyleSheet.create({
   payoutIcon: { width: 34, height: 34, borderRadius: 17, backgroundColor: colors.successBg, alignItems: 'center', justifyContent: 'center' },
   payoutMeta: { ...typography.caption, color: colors.textSecondary, marginTop: 2 },
   payoutAmount: { ...typography.titleMd, color: colors.success },
+  insightsSection: { marginTop: spacing.lg },
+  insightsSectionTitle: { ...typography.headingSm, marginBottom: spacing.sm },
+  insightsRow: { flexDirection: 'row' },
+  insightCard: { flex: 1, backgroundColor: colors.card, borderRadius: radii.lg, padding: spacing.md, marginRight: spacing.sm, alignItems: 'flex-start' },
+  insightValue: { ...typography.titleLg, color: colors.textPrimary },
+  insightLabel: { ...typography.caption, color: colors.textSecondary, marginTop: 2 },
   unavailableBanner: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -504,6 +633,18 @@ const styles = StyleSheet.create({
   },
   tabDotText: { ...typography.caption, color: colors.white, fontSize: 10, fontWeight: '700' as const },
   carRowTop: { flexDirection: 'row', alignItems: 'center' },
+  inventoryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderRadius: radii.md,
+    paddingVertical: spacing.xs,
+    marginTop: spacing.sm,
+  },
+  inventoryStat: { flex: 1, alignItems: 'center' },
+  inventoryDivider: { width: StyleSheet.hairlineWidth, height: 24, backgroundColor: colors.border },
+  inventoryValue: { ...typography.titleLg, color: colors.textPrimary },
+  inventoryLabel: { ...typography.caption, color: colors.textSecondary, marginTop: 1 },
   activeRow: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
@@ -12,6 +12,7 @@ import { EmptyState } from '../../components/EmptyState';
 import { FallbackImage } from '../../components/FallbackImage';
 import { useAuth } from '../../context/AuthContext';
 import { useCars } from '../../context/CarsContext';
+import { useBookings } from '../../context/BookingsContext';
 import { useReviews } from '../../context/ReviewsContext';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Review'>;
@@ -24,24 +25,48 @@ export const ReviewScreen: React.FC<Props> = ({ route, navigation }) => {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const { getCarById, updateCarRating } = useCars();
-  const { addReview } = useReviews();
+  const { getBookingById } = useBookings();
+  const { addReview, hasReviewedBooking } = useReviews();
   const car = getCarById(route.params.carId);
+  const booking = getBookingById(route.params.bookingId);
 
   const [rating, setRating] = useState(5);
   const [comment, setComment] = useState('');
   const [saving, setSaving] = useState(false);
 
-  if (!car || !user) {
+  // Final-verification fix -- addReview() (ReviewsContext) has no data-layer
+  // check of its own that the booking is this renter's, or that it's
+  // actually completed; that was only ever enforced by "Write a Review"'s
+  // visibility on Booking Details. Re-check both here, at the point the
+  // review is actually created, so a foreign/guessed or not-yet-completed
+  // bookingId can't be reviewed just by reaching this screen directly.
+  const isEligible = !!booking && booking.renterId === user?.id && booking.status === 'completed';
+
+  if (!car || !user || !isEligible) {
     return (
-      <View style={{ flex: 1, paddingTop: insets.top }}>
+      <View style={{ flex: 1, backgroundColor: colors.background }}>
+        <ScreenHeader onBack={() => navigation.goBack()} />
         <EmptyState icon="alert-circle-outline" title="Unable to load this booking" />
+      </View>
+    );
+  }
+
+  // Reaching this screen twice for the same booking (back-navigation, a
+  // stale notification/deep link) should never let a second review through
+  // -- show the same "already done" treatment other one-shot screens
+  // (Report) use instead of re-rendering the form.
+  if (hasReviewedBooking(route.params.bookingId)) {
+    return (
+      <View style={{ flex: 1, backgroundColor: colors.background }}>
+        <ScreenHeader title="Rate & Review" onBack={() => navigation.goBack()} />
+        <EmptyState icon="checkmark-circle-outline" title="Already reviewed" subtitle="You've already submitted a review for this rental." />
       </View>
     );
   }
 
   const onSubmit = async () => {
     setSaving(true);
-    await addReview({
+    const result = await addReview({
       bookingId: route.params.bookingId,
       carId: car.id,
       renterId: user.id,
@@ -49,6 +74,11 @@ export const ReviewScreen: React.FC<Props> = ({ route, navigation }) => {
       rating,
       comment: comment.trim(),
     });
+    if (!result.success) {
+      setSaving(false);
+      if (result.error) Alert.alert('Unable to submit review', result.error);
+      return;
+    }
     await updateCarRating(car.id, rating);
     setSaving(false);
     navigation.goBack();

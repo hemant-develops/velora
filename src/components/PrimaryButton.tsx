@@ -40,6 +40,9 @@ export const PrimaryButton: React.FC<Props> = ({
       testID={testID}
       onPress={onPress}
       disabled={isDisabled}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ disabled: isDisabled, busy: !!loading }}
       style={({ pressed }) => [
         styles.base,
         {

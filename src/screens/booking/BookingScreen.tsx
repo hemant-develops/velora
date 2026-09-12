@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -12,9 +12,12 @@ import { Chip } from '../../components/Chip';
 import { RentalModeSelector } from '../../components/RentalModeSelector';
 import { FallbackImage } from '../../components/FallbackImage';
 import { EmptyState } from '../../components/EmptyState';
+import { BookingCalendarModal } from '../../components/BookingCalendarModal';
 import { useCars } from '../../context/CarsContext';
+import { useBookings } from '../../context/BookingsContext';
 import { avatars } from '../../data/images';
-import { formatCurrency, formatDate } from '../../utils/format';
+import { formatCurrency, formatDate, daysBetween } from '../../utils/format';
+import { applyOffer } from '../../utils/offers';
 import { RentalMode } from '../../types';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Booking'>;
@@ -32,25 +35,70 @@ const addDays = (base: Date, days: number) => {
 export const BookingScreen: React.FC<Props> = ({ route, navigation }) => {
   const insets = useSafeAreaInsets();
   const { getCarById } = useCars();
+  const { getAvailableQuantity, getAccurateAvailableQuantity } = useBookings();
   const car = getCarById(route.params.carId);
 
   const [rentalMode, setRentalMode] = useState<RentalMode>(car?.rentalModes[0] ?? 'self_drive');
-  const [pickupOffset, setPickupOffset] = useState(1);
-  const [dropoffOffset, setDropoffOffset] = useState(4);
+  const today = useMemo(() => new Date(), []);
+  // Calendar-based date selection replaces the previous +/- day-offset
+  // stepper (see BookingCalendarModal) -- the downstream contract is
+  // unchanged: this screen still only ever hands pickupDate/dropoffDate
+  // ISO strings to getAvailableQuantity/createBooking, exactly as before.
+  const [pickupDate, setPickupDate] = useState(() => addDays(today, 1));
+  const [dropoffDate, setDropoffDate] = useState(() => addDays(today, 4));
+  const [calendarVisible, setCalendarVisible] = useState(false);
   const [pickupTime, setPickupTime] = useState(TIME_SLOTS[0]);
   const [dropoffTime, setDropoffTime] = useState(TIME_SLOTS[2]);
   const [pickupLocation, setPickupLocation] = useState(car?.location ?? '');
   const [dropoffLocation, setDropoffLocation] = useState(car?.location ?? '');
+  // A real, working promo code -- see utils/offers.ts. Applied to the actual
+  // subtotal below and carried through into the total handed to Agreement/
+  // Payment; nothing here is a cosmetic "discount" label with no effect.
+  const [promoInput, setPromoInput] = useState('');
+  const [appliedPromoCode, setAppliedPromoCode] = useState<string | undefined>();
+  const [promoError, setPromoError] = useState<string | undefined>();
 
-  const today = useMemo(() => new Date(), []);
-  const pickupDate = useMemo(() => addDays(today, pickupOffset), [today, pickupOffset]);
-  const dropoffDate = useMemo(() => addDays(today, dropoffOffset), [today, dropoffOffset]);
-  const days = Math.max(dropoffOffset - pickupOffset, 1);
+  const days = Math.max(daysBetween(pickupDate.toISOString(), dropoffDate.toISOString()), 1);
+  // Fast local read (see BookingsContext.getAvailableQuantity) so this
+  // updates instantly as the renter adjusts dates -- the actual atomic
+  // gate against overselling runs server-side in Supabase at Pay time.
+  const localEstimate = useMemo(
+    () => (car ? getAvailableQuantity(car.id, pickupDate.toISOString(), dropoffDate.toISOString()) : 0),
+    [car, getAvailableQuantity, pickupDate, dropoffDate],
+  );
+  // MULTI-DEVICE MIGRATION -- localEstimate above only knows about bookings
+  // THIS device's RLS session can see (this renter's own, or -- if they're
+  // the owner -- every booking on their own car), so it can under-count
+  // units another renter has already taken on a car you don't own. Shown
+  // immediately for instant feedback, then corrected a moment later by the
+  // accurate, privacy-safe get_car_taken_count RPC (see BookingsContext).
+  // The real safety net against overselling stays server-side either way --
+  // this only changes what NUMBER the renter sees before they get there.
+  const [availableQuantity, setAvailableQuantity] = useState(localEstimate);
+  useEffect(() => {
+    setAvailableQuantity(localEstimate);
+    if (!car) return;
+    let cancelled = false;
+    getAccurateAvailableQuantity(car.id, pickupDate.toISOString(), dropoffDate.toISOString()).then((accurate) => {
+      if (!cancelled) setAvailableQuantity(accurate);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [car, pickupDate, dropoffDate, localEstimate]);
+
+  const onApplyDates = (nextPickup: Date, nextDropoff: Date) => {
+    setPickupDate(nextPickup);
+    setDropoffDate(nextDropoff);
+    setCalendarVisible(false);
+  };
 
   if (!car) {
     return (
-      <View style={{ flex: 1, paddingTop: insets.top }}>
-        <EmptyState icon="alert-circle-outline" title="Unable to load booking" />
+      <View style={{ flex: 1, backgroundColor: colors.background }}>
+        <ScreenHeader onBack={() => navigation.goBack()} />
+        <EmptyState icon="alert-circle-outline" title="Unable to load booking" subtitle="This listing may no longer be available." />
       </View>
     );
   }
@@ -58,7 +106,26 @@ export const BookingScreen: React.FC<Props> = ({ route, navigation }) => {
   const activePrice = rentalMode === 'self_drive' ? car.pricePerDay : car.driverPricePerDay;
   const subtotal = activePrice * days;
   const taxes = Math.round(subtotal * TAX_RATE);
-  const total = subtotal + taxes + SERVICE_FEE;
+  const promoResult = appliedPromoCode ? applyOffer(appliedPromoCode, subtotal) : undefined;
+  const discount = promoResult?.success ? promoResult.discount : 0;
+  const total = subtotal + taxes + SERVICE_FEE - discount;
+
+  const onApplyPromo = () => {
+    const result = applyOffer(promoInput, subtotal);
+    if (!result.success) {
+      setPromoError(result.error);
+      setAppliedPromoCode(undefined);
+      return;
+    }
+    setAppliedPromoCode(promoInput.trim().toUpperCase());
+    setPromoError(undefined);
+  };
+
+  const onRemovePromo = () => {
+    setAppliedPromoCode(undefined);
+    setPromoInput('');
+    setPromoError(undefined);
+  };
 
   const onContinue = () => {
     navigation.navigate('Agreement', {
@@ -115,54 +182,123 @@ export const BookingScreen: React.FC<Props> = ({ route, navigation }) => {
         <InputField label="Pickup Location" leftIcon="location-outline" value={pickupLocation} onChangeText={setPickupLocation} />
         <InputField label="Drop-off Location" leftIcon="location-outline" value={dropoffLocation} onChangeText={setDropoffLocation} />
 
-        <View style={styles.dateRow}>
+        <Pressable
+          style={[styles.dateSelectCard, shadows.sm]}
+          onPress={() => setCalendarVisible(true)}
+          accessibilityRole="button"
+          accessibilityLabel="Select pickup and drop-off dates"
+        >
           <View style={styles.dateCol}>
             <Text style={styles.dateLabel}>Pickup Date</Text>
-            <View style={styles.stepper}>
-              <Pressable onPress={() => setPickupOffset((v) => Math.max(0, v - 1))} style={styles.stepperBtn} hitSlop={8}>
-                <Ionicons name="remove" size={16} color={colors.textPrimary} />
-              </Pressable>
-              <Text style={styles.dateValue}>{formatDate(pickupDate.toISOString())}</Text>
-              <Pressable
-                onPress={() => setPickupOffset((v) => Math.min(v + 1, dropoffOffset - 1))}
-                style={styles.stepperBtn}
-                hitSlop={8}
-              >
-                <Ionicons name="add" size={16} color={colors.textPrimary} />
-              </Pressable>
-            </View>
+            <Text style={styles.dateValue}>{formatDate(pickupDate.toISOString())}</Text>
           </View>
+          <View style={styles.dateDivider} />
           <View style={styles.dateCol}>
             <Text style={styles.dateLabel}>Drop-off Date</Text>
-            <View style={styles.stepper}>
-              <Pressable
-                onPress={() => setDropoffOffset((v) => Math.max(v - 1, pickupOffset + 1))}
-                style={styles.stepperBtn}
-                hitSlop={8}
-              >
-                <Ionicons name="remove" size={16} color={colors.textPrimary} />
-              </Pressable>
-              <Text style={styles.dateValue}>{formatDate(dropoffDate.toISOString())}</Text>
-              <Pressable onPress={() => setDropoffOffset((v) => v + 1)} style={styles.stepperBtn} hitSlop={8}>
-                <Ionicons name="add" size={16} color={colors.textPrimary} />
-              </Pressable>
-            </View>
+            <Text style={styles.dateValue}>{formatDate(dropoffDate.toISOString())}</Text>
           </View>
+          <View style={styles.calendarIconWrap}>
+            <Ionicons name="calendar-outline" size={18} color={colors.textPrimary} />
+          </View>
+        </Pressable>
+
+        <BookingCalendarModal
+          visible={calendarVisible}
+          pickupDate={pickupDate}
+          dropoffDate={dropoffDate}
+          onClose={() => setCalendarVisible(false)}
+          onApply={onApplyDates}
+        />
+
+        {/* B3.5 -- a third, "low stock" tier using the exact same real
+            availableQuantity this row already computes (instant local
+            estimate, corrected a moment later by the accurate server count
+            -- see the useEffect above) -- no fabricated countdown or fake
+            urgency, just a clearer visual read of a number that was already
+            being shown. Threshold of 2 matches common "few left" marketplace
+            conventions without overstating it for listings that simply have
+            a small total quantity. */}
+        <View
+          style={[
+            styles.availabilityRow,
+            availableQuantity === 0
+              ? styles.availabilityRowNone
+              : availableQuantity <= 2
+                ? styles.availabilityRowLow
+                : undefined,
+          ]}
+        >
+          <Ionicons
+            name={availableQuantity === 0 ? 'close-circle' : availableQuantity <= 2 ? 'alert-circle' : 'checkmark-circle'}
+            size={16}
+            color={availableQuantity === 0 ? colors.danger : availableQuantity <= 2 ? colors.warning : colors.success}
+          />
+          <Text
+            style={[
+              styles.availabilityText,
+              availableQuantity === 0
+                ? styles.availabilityTextNone
+                : availableQuantity <= 2
+                  ? styles.availabilityTextLow
+                  : undefined,
+            ]}
+          >
+            {availableQuantity === 0
+              ? 'No cars available for these dates'
+              : availableQuantity <= 2
+                ? `Only ${availableQuantity} car${availableQuantity === 1 ? '' : 's'} left for these dates`
+                : `${availableQuantity} cars available for these dates`}
+          </Text>
         </View>
 
-        <Text style={styles.dateLabel}>Pickup Time</Text>
+        <Text style={styles.timeLabel}>Pickup Time</Text>
         <View style={styles.chipRow}>
           {TIME_SLOTS.map((slot) => (
             <Chip key={`pu-${slot}`} label={slot} selected={pickupTime === slot} onPress={() => setPickupTime(slot)} />
           ))}
         </View>
 
-        <Text style={[styles.dateLabel, { marginTop: spacing.sm }]}>Drop-off Time</Text>
+        <Text style={[styles.timeLabel, { marginTop: spacing.sm }]}>Drop-off Time</Text>
         <View style={styles.chipRow}>
           {TIME_SLOTS.map((slot) => (
             <Chip key={`do-${slot}`} label={slot} selected={dropoffTime === slot} onPress={() => setDropoffTime(slot)} />
           ))}
         </View>
+
+        <Text style={styles.sectionTitle}>Promo Code</Text>
+        {appliedPromoCode ? (
+          <View style={styles.promoAppliedRow}>
+            <Ionicons name="pricetag" size={16} color={colors.success} />
+            <Text style={styles.promoAppliedText}>
+              {appliedPromoCode} applied — you saved {formatCurrency(discount)}
+            </Text>
+            <Pressable onPress={onRemovePromo} hitSlop={8}>
+              <Text style={styles.promoRemoveText}>Remove</Text>
+            </Pressable>
+          </View>
+        ) : (
+          <View style={styles.promoRow}>
+            <InputField
+              placeholder="Enter promo code"
+              leftIcon="pricetag-outline"
+              autoCapitalize="characters"
+              value={promoInput}
+              onChangeText={(text) => {
+                setPromoInput(text);
+                setPromoError(undefined);
+              }}
+              style={{ flex: 1 }}
+            />
+            <Pressable
+              style={[styles.promoApplyBtn, !promoInput.trim() ? styles.promoApplyBtnDisabled : undefined]}
+              onPress={onApplyPromo}
+              disabled={!promoInput.trim()}
+            >
+              <Text style={styles.promoApplyBtnText}>Apply</Text>
+            </Pressable>
+          </View>
+        )}
+        {promoError ? <Text style={styles.promoErrorText}>{promoError}</Text> : null}
 
         <Text style={styles.sectionTitle}>Price Details</Text>
         <View style={styles.summaryCard}>
@@ -180,6 +316,12 @@ export const BookingScreen: React.FC<Props> = ({ route, navigation }) => {
             <Text style={styles.summaryLabel}>Service fee</Text>
             <Text style={styles.summaryValue}>{formatCurrency(SERVICE_FEE)}</Text>
           </View>
+          {discount > 0 ? (
+            <View style={styles.summaryRow}>
+              <Text style={[styles.summaryLabel, { color: colors.success }]}>Promo discount</Text>
+              <Text style={[styles.summaryValue, { color: colors.success }]}>-{formatCurrency(discount)}</Text>
+            </View>
+          ) : null}
           <View style={styles.divider} />
           <View style={styles.summaryRow}>
             <Text style={styles.totalLabel}>Total Amount</Text>
@@ -193,7 +335,13 @@ export const BookingScreen: React.FC<Props> = ({ route, navigation }) => {
           <Text style={styles.footerLabel}>Total</Text>
           <Text style={styles.footerTotal}>{formatCurrency(total)}</Text>
         </View>
-        <PrimaryButton label="Review Agreement" onPress={onContinue} fullWidth={false} style={{ paddingHorizontal: spacing.xl }} />
+        <PrimaryButton
+          label="Review Agreement"
+          onPress={onContinue}
+          disabled={availableQuantity === 0}
+          fullWidth={false}
+          style={{ paddingHorizontal: spacing.xl }}
+        />
       </View>
     </View>
   );
@@ -214,21 +362,67 @@ const styles = StyleSheet.create({
   },
   driverAvatar: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.card },
   driverCaption: { ...typography.bodySm, color: colors.textSecondary, marginTop: 2 },
-  dateRow: { flexDirection: 'row', marginTop: spacing.xs },
-  dateCol: { flex: 1, marginRight: spacing.sm },
-  dateLabel: { ...typography.titleMd, color: colors.textPrimary, marginBottom: 8 },
-  stepper: {
+  dateSelectCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    backgroundColor: colors.card,
+    borderRadius: radii.lg,
+    padding: spacing.md,
+    marginTop: spacing.xs,
+  },
+  dateCol: { flex: 1 },
+  dateDivider: { width: 1, height: 34, backgroundColor: colors.border, marginHorizontal: spacing.sm },
+  dateLabel: { ...typography.bodySm, color: colors.textSecondary, marginBottom: 4 },
+  timeLabel: { ...typography.titleMd, color: colors.textPrimary, marginBottom: 8 },
+  calendarIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     backgroundColor: colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: spacing.sm,
+  },
+  dateValue: { ...typography.titleLg, color: colors.textPrimary },
+  availabilityRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.successBg,
     borderRadius: radii.md,
     paddingHorizontal: spacing.sm,
-    height: 50,
+    paddingVertical: spacing.xs,
+    marginTop: spacing.sm,
   },
-  stepperBtn: { width: 28, height: 28, borderRadius: 14, backgroundColor: colors.white, alignItems: 'center', justifyContent: 'center' },
-  dateValue: { ...typography.bodySm, color: colors.textPrimary, fontWeight: '700' },
+  availabilityRowNone: { backgroundColor: colors.dangerBg },
+  availabilityRowLow: { backgroundColor: colors.warningBg },
+  availabilityText: { ...typography.bodySm, color: colors.success, marginLeft: 6, fontWeight: '600' },
+  availabilityTextNone: { color: colors.danger },
+  availabilityTextLow: { color: colors.warning },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap' },
+  promoRow: { flexDirection: 'row', alignItems: 'flex-start' },
+  promoApplyBtn: {
+    backgroundColor: colors.onPrimary,
+    borderRadius: radii.md,
+    paddingHorizontal: spacing.md,
+    height: 54,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: spacing.sm,
+  },
+  promoApplyBtnDisabled: { opacity: 0.4 },
+  promoApplyBtnText: { ...typography.titleMd, color: colors.white },
+  promoErrorText: { ...typography.bodySm, color: colors.danger, marginTop: -spacing.sm, marginBottom: spacing.sm },
+  promoAppliedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.successBg,
+    borderRadius: radii.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    marginBottom: spacing.sm,
+  },
+  promoAppliedText: { ...typography.bodySm, color: colors.success, marginLeft: 8, flex: 1, fontWeight: '600' },
+  promoRemoveText: { ...typography.bodySm, color: colors.textSecondary, fontWeight: '700' },
   summaryCard: { backgroundColor: colors.surface, borderRadius: radii.lg, padding: spacing.md },
   summaryRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: spacing.sm },
   summaryLabel: { ...typography.bodyMd, color: colors.textSecondary },

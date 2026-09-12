@@ -18,11 +18,15 @@ import { PaymentMethodsScreen } from '../screens/misc/PaymentMethodsScreen';
 import { HelpSupportScreen } from '../screens/misc/HelpSupportScreen';
 import { LegalScreen } from '../screens/misc/LegalScreen';
 import { ReviewScreen } from '../screens/rents/ReviewScreen';
+import { ReportScreen } from '../screens/misc/ReportScreen';
 import { OwnerVerificationScreen } from '../screens/profile/OwnerVerificationScreen';
 import { LocationPickerScreen } from '../screens/misc/LocationPickerScreen';
 import { OwnerPublicProfileScreen } from '../screens/owner/OwnerPublicProfileScreen';
 import { CustomerProfileScreen } from '../screens/profile/CustomerProfileScreen';
 import { BookingDetailsScreen } from '../screens/booking/BookingDetailsScreen';
+import { WalletScreen } from '../screens/misc/WalletScreen';
+import { ReferEarnScreen } from '../screens/misc/ReferEarnScreen';
+import { OffersScreen } from '../screens/misc/OffersScreen';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -49,6 +53,10 @@ export const RootNavigator: React.FC = () => (
     <Stack.Screen name="PaymentMethods" component={PaymentMethodsScreen} />
     <Stack.Screen name="HelpSupport" component={HelpSupportScreen} />
     <Stack.Screen name="Legal" component={LegalScreen} />
+    <Stack.Screen name="Wallet" component={WalletScreen} />
+    <Stack.Screen name="ReferEarn" component={ReferEarnScreen} />
+    <Stack.Screen name="Offers" component={OffersScreen} />
     <Stack.Screen name="Review" component={ReviewScreen} options={{ presentation: 'modal' }} />
+    <Stack.Screen name="Report" component={ReportScreen} options={{ presentation: 'modal' }} />
   </Stack.Navigator>
 );

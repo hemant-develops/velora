@@ -12,6 +12,19 @@ interface Props {
   hasUnreadNotifications?: boolean;
 }
 
+// A plain, client-side time-of-day greeting -- purely derived from the
+// device clock (no fabricated personalization, no fake "N cars viewed
+// today" style copy). The small, understated touch a real product's home
+// header has that a first draft usually skips.
+const getGreeting = () => {
+  const hour = new Date().getHours();
+  if (hour < 5) return 'Good night';
+  if (hour < 12) return 'Good morning';
+  if (hour < 17) return 'Good afternoon';
+  if (hour < 21) return 'Good evening';
+  return 'Good night';
+};
+
 export const AppHeader: React.FC<Props> = ({ user, onPressNotifications, onPressAvatar, onPressLocation, hasUnreadNotifications }) => (
   <View style={styles.row}>
     <View style={styles.left}>
@@ -19,7 +32,8 @@ export const AppHeader: React.FC<Props> = ({ user, onPressNotifications, onPress
         <Image source={{ uri: user.avatar }} style={styles.avatar} />
       </Pressable>
       <View style={{ marginLeft: spacing.sm, flexShrink: 1 }}>
-        <Text style={typography.headingSm}>{user.name}</Text>
+        <Text style={styles.greeting}>{getGreeting()}</Text>
+        <Text style={typography.headingSm} numberOfLines={1}>{user.name}</Text>
         <Pressable style={styles.locationRow} onPress={onPressLocation} hitSlop={6} accessibilityLabel="Change location">
           <Ionicons name="location-sharp" size={13} color={user.location ? colors.textSecondary : colors.primaryDark} />
           <Text style={[styles.locationText, !user.location ? styles.locationTextPrompt : undefined]} numberOfLines={1}>
@@ -39,7 +53,8 @@ export const AppHeader: React.FC<Props> = ({ user, onPressNotifications, onPress
 const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   left: { flexDirection: 'row', alignItems: 'center', flexShrink: 1, flex: 1, marginRight: spacing.sm },
-  avatar: { width: 46, height: 46, borderRadius: 23, backgroundColor: colors.surface },
+  avatar: { width: 46, height: 46, borderRadius: 23, backgroundColor: colors.surface, borderWidth: 2, borderColor: colors.primary },
+  greeting: { ...typography.caption, color: colors.textTertiary, fontWeight: '600' },
   locationRow: { flexDirection: 'row', alignItems: 'center', marginTop: 2 },
   locationText: { ...typography.bodySm, color: colors.textSecondary, marginLeft: 3 },
   locationTextPrompt: { color: colors.primaryDark, fontWeight: '600' },

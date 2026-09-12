@@ -8,20 +8,36 @@ import { InputField } from '../../components/InputField';
 import { PrimaryButton } from '../../components/PrimaryButton';
 import { ScreenHeader } from '../../components/ScreenHeader';
 import { isValidEmail } from '../../utils/format';
+import { useAuth } from '../../context/AuthContext';
 
 type Props = NativeStackScreenProps<AuthStackParamList, 'ForgotPassword'>;
 
 export const ForgotPasswordScreen: React.FC<Props> = ({ navigation }) => {
+  const { resetPassword } = useAuth();
   const [email, setEmail] = useState('');
   const [error, setError] = useState<string | undefined>();
   const [sent, setSent] = useState(false);
+  const [loading, setLoading] = useState(false);
 
-  const onSend = () => {
+  // Real, working reset -- calls Supabase Auth's own resetPasswordForEmail
+  // (see AuthContext.resetPassword), the same email infrastructure that
+  // already sends VELORA's signup confirmation email. Supabase does not
+  // reveal whether an email is registered, so a successful call always
+  // shows the same "check your email" state either way -- that is
+  // Supabase's own privacy-preserving behavior, not this screen faking it.
+  const onSend = async () => {
     if (!isValidEmail(email)) {
       setError('Enter a valid email address.');
       return;
     }
     setError(undefined);
+    setLoading(true);
+    const result = await resetPassword(email);
+    setLoading(false);
+    if (!result.success) {
+      setError(result.error);
+      return;
+    }
     setSent(true);
   };
 
@@ -37,7 +53,7 @@ export const ForgotPasswordScreen: React.FC<Props> = ({ navigation }) => {
             </View>
             <Text style={styles.title}>Check your email</Text>
             <Text style={styles.subtitle}>
-              We've sent password reset instructions to {email}. (Demo mode — no email is actually sent.)
+              If {email} is registered with VELORA, we've sent password reset instructions to it.
             </Text>
             <PrimaryButton label="Back to Login" onPress={() => navigation.navigate('Login')} style={{ marginTop: spacing.lg }} />
           </>
@@ -58,7 +74,7 @@ export const ForgotPasswordScreen: React.FC<Props> = ({ navigation }) => {
               error={error}
               style={{ marginTop: spacing.lg }}
             />
-            <PrimaryButton label="Send Reset Link" onPress={onSend} style={{ marginTop: spacing.sm }} />
+            <PrimaryButton label="Send Reset Link" onPress={onSend} loading={loading} style={{ marginTop: spacing.sm }} />
           </>
         )}
       </View>

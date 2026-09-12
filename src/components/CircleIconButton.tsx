@@ -26,7 +26,9 @@ export const CircleIconButton: React.FC<Props> = ({
     onPress={onPress}
     disabled={disabled}
     hitSlop={10}
+    accessibilityRole="button"
     accessibilityLabel={accessibilityLabel}
+    accessibilityState={{ disabled: !!disabled }}
     style={[styles.circle, shadows.sm, { backgroundColor: background, opacity: disabled ? 0.5 : 1 }, style]}
   >
     <Ionicons name={icon} size={20} color={color} />

@@ -18,7 +18,9 @@ export const FavoriteButton: React.FC<Props> = ({ carId, size = 18, style }) => 
     <Pressable
       onPress={() => toggleFavorite(carId)}
       hitSlop={10}
+      accessibilityRole="button"
       accessibilityLabel={active ? 'Remove from favorites' : 'Add to favorites'}
+      accessibilityState={{ selected: active }}
       style={[styles.circle, shadows.sm, style]}
     >
       <Ionicons name={active ? 'heart' : 'heart-outline'} size={size} color={active ? colors.danger : colors.textPrimary} />

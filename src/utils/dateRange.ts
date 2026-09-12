@@ -20,3 +20,18 @@ export const dateRangesOverlap = (startA: string, endA: string, startB: string, 
   const bEnd = toDayTimestamp(endB);
   return aStart <= bEnd && bStart <= aEnd;
 };
+
+// Reduces an ISO datetime string to the plain 'YYYY-MM-DD' calendar day it
+// falls on in LOCAL time -- the same day toDayTimestamp above already
+// normalizes to internally, just as a string instead of a timestamp. Used
+// when a date needs to cross a boundary that only understands calendar
+// days (e.g. a Postgres `date` column/parameter), so that day stays
+// consistent with what this file's own local overlap check already treats
+// as "the day" for that same ISO string.
+export const toLocalDateOnly = (iso: string): string => {
+  const d = new Date(iso);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};

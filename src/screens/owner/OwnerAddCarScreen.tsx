@@ -15,6 +15,8 @@ import { useAuth } from '../../context/AuthContext';
 import { useCars } from '../../context/CarsContext';
 import { generateId } from '../../utils/format';
 import { detectCurrentLocationLabel, requestForegroundPermission } from '../../hooks/useDeviceLocation';
+import { getCarQuantity } from '../../utils/inventory';
+import { showToast } from '../../utils/toast';
 import { Car, CarCategory, FuelType, RentalMode, Transmission } from '../../types';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'OwnerAddCar'>;
@@ -71,6 +73,11 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
   const [fuelType, setFuelType] = useState<FuelType>(existingCar?.fuelType ?? 'Petrol');
   const [fuelEconomy, setFuelEconomy] = useState(existingCar?.fuelEconomy ?? '');
   const [seats, setSeats] = useState(existingCar ? String(existingCar.seats) : '4');
+  // How many identical physical units this listing represents (e.g. 3
+  // identical Swifts as one listing instead of 3 separate ones). Always a
+  // real, already-set number on an existing car (getCarQuantity's ?? 1
+  // fallback is only for listings that predate this field).
+  const [quantity, setQuantity] = useState(existingCar ? String(getCarQuantity(existingCar)) : '1');
   // Pre-fill from the owner's own profile location where available -- never
   // a hardcoded city. They can still change it per-listing (e.g. a car kept
   // at a different pickup point) or detect the device's current location.
@@ -148,7 +155,10 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
   };
 
   const onSubmit = async () => {
-    if (!user) return;
+    // M10 hardening: explicit re-entrancy guard (matches
+    // RentalAgreementScreen.onSign) so a fast double-tap on Save can never
+    // fire two concurrent add/update-car calls for one submission.
+    if (!user || saving) return;
     if (images.length === 0) return setError('Add at least one photo of the car.');
     if (!name.trim()) return setError('Please enter a car name.');
     if (!location.trim()) return setError('Enter a pickup location for this car.');
@@ -160,62 +170,93 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
 
     const speed = Number(topSpeed) || 180;
     const seatCount = Number(seats) || 4;
+    // Always a positive whole number of units -- an empty/invalid/zero
+    // entry falls back to 1 rather than silently listing zero cars.
+    const quantityCount = Math.max(1, Math.floor(Number(quantity)) || 1);
     const driverPrice = Number(driverPricePerDay) || Math.round(price * 1.4);
     const trimmedDescription =
       description.trim() || `A well-maintained ${category.toLowerCase()} ready for your next trip.`;
     const yearNum = year.trim() && !Number.isNaN(Number(year)) ? Number(year) : undefined;
 
-    if (isEditMode && existingCar) {
-      // Preserve fields that aren't editable here (id, ownerId) and the
-      // car's real, earned rating/reviewCount — editing a listing never
-      // resets or fabricates those.
-      await updateOwnerCar(existingCar.id, {
-        name: name.trim(),
-        brandId,
-        year: yearNum,
-        category,
-        images,
-        pricePerDay: price,
-        driverPricePerDay: driverPrice,
-        topSpeed: speed,
-        transmission,
-        fuelType,
-        fuelEconomy: fuelEconomy.trim() || '15 km/l',
-        seats: seatCount,
-        location: location.trim(),
-        rentalModes,
-        description: trimmedDescription,
-        isActive,
-      });
-    } else {
-      const newCar: Car = {
-        id: generateId('car'),
-        name: name.trim(),
-        brandId,
-        year: yearNum,
-        category,
-        images,
-        pricePerDay: price,
-        driverPricePerDay: driverPrice,
-        rating: 0,
-        reviewCount: 0,
-        topSpeed: speed,
-        transmission,
-        fuelType,
-        fuelEconomy: fuelEconomy.trim() || '15 km/l',
-        seats: seatCount,
-        features: DEFAULT_FEATURES,
-        location: location.trim(),
-        ownerId: user.id,
-        rentalModes,
-        description: trimmedDescription,
-        isActive,
-      };
-      await addOwnerCar(newCar);
-    }
+    // MULTI-DEVICE MIGRATION -- addOwnerCar/updateOwnerCar now write to
+    // Supabase (previously a synchronous local AsyncStorage write that could
+    // never realistically fail), so a real network/RLS error can now throw
+    // here. Without this try/catch, that throw was an unhandled promise
+    // rejection: `saving` never got reset to false (Save stayed stuck
+    // disabled), no error reached the owner, and Save/Publish silently never
+    // happened -- now it surfaces through the same inline `error` banner
+    // already used for validation above, and `saving` always resets via
+    // `finally` regardless of outcome.
+    try {
+      if (isEditMode && existingCar) {
+        // Preserve fields that aren't editable here (id, ownerId) and the
+        // car's real, earned rating/reviewCount — editing a listing never
+        // resets or fabricates those.
+        await updateOwnerCar(existingCar.id, {
+          name: name.trim(),
+          brandId,
+          year: yearNum,
+          category,
+          images,
+          pricePerDay: price,
+          driverPricePerDay: driverPrice,
+          topSpeed: speed,
+          transmission,
+          fuelType,
+          fuelEconomy: fuelEconomy.trim() || '15 km/l',
+          seats: seatCount,
+          location: location.trim(),
+          rentalModes,
+          description: trimmedDescription,
+          isActive,
+          quantity: quantityCount,
+        });
+      } else {
+        const newCar: Car = {
+          id: generateId('car'),
+          name: name.trim(),
+          brandId,
+          year: yearNum,
+          category,
+          images,
+          pricePerDay: price,
+          driverPricePerDay: driverPrice,
+          rating: 0,
+          reviewCount: 0,
+          topSpeed: speed,
+          transmission,
+          fuelType,
+          fuelEconomy: fuelEconomy.trim() || '15 km/l',
+          seats: seatCount,
+          features: DEFAULT_FEATURES,
+          location: location.trim(),
+          ownerId: user.id,
+          rentalModes,
+          description: trimmedDescription,
+          isActive,
+          quantity: quantityCount,
+          // Set once, here, at real creation time only -- never touched by
+          // the edit branch above, so "Newest" sort reflects when a listing
+          // was first published, not when it was last edited.
+          createdAt: new Date().toISOString(),
+        };
+        await addOwnerCar(newCar);
+      }
 
-    setSaving(false);
-    navigation.goBack();
+      // B3 -- Save/Publish previously navigated back in total silence; the
+      // owner had no way to tell the save actually went through versus the
+      // screen just closing. Reuses the same non-blocking showToast already
+      // proven on the dashboard's Active/Inactive toggle instead of adding a
+      // new feedback pattern.
+      showToast(isEditMode ? 'Changes saved' : 'Listing published');
+      navigation.goBack();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      console.log(`VELORA_OWNER_CAR_SAVE_FAILED: ${message}`);
+      setError(isEditMode ? "We couldn't save your changes right now. Please try again." : "We couldn't publish this listing right now. Please try again.");
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -336,6 +377,16 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
 
         <InputField label="Mileage (e.g. 18 km/l)" placeholder="18 km/l" value={fuelEconomy} onChangeText={setFuelEconomy} />
         <InputField label="Seats" placeholder="e.g. 5" keyboardType="numeric" value={seats} onChangeText={setSeats} />
+        <InputField
+          label="Number of Identical Cars"
+          placeholder="e.g. 3"
+          keyboardType="numeric"
+          value={quantity}
+          onChangeText={setQuantity}
+        />
+        <Text style={styles.quantityHint}>
+          List multiple identical units (e.g. 3 Swifts) as one listing instead of creating separate listings for each.
+        </Text>
 
         <View style={styles.locationLabelRow}>
           <Text style={styles.label}>Pickup Location</Text>
@@ -418,6 +469,7 @@ const styles = StyleSheet.create({
   },
   photoButtonText: { ...typography.titleMd, color: colors.textPrimary, marginLeft: 8 },
   photoHint: { ...typography.caption, color: colors.textTertiary, marginBottom: spacing.md },
+  quantityHint: { ...typography.caption, color: colors.textTertiary, marginTop: -4, marginBottom: spacing.md },
   activeToggleRow: {
     flexDirection: 'row',
     alignItems: 'center',

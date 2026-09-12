@@ -6,12 +6,14 @@ with **Self Drive** and **With Driver** rental modes.
 
 ## What's implemented
 
-- **Auth (mock/local)** — Login and Sign Up both ask you to pick **Rent Cars** or **List My Car**
-  before continuing, and that choice decides which app you get (see "Renter vs Rental Owner"
-  below). Forgot Password is also implemented. Any valid-looking email/password logs you in
-  instantly (demo mode) — accounts persist on-device via AsyncStorage. Picking a different mode on
-  Login for an email you've already used switches that account's mode too, which keeps the demo
-  predictable while you're testing both roles.
+- **Auth (real Supabase Auth)** — Login and Sign Up both ask you to pick **Rent Cars** or
+  **List My Car** before continuing, and that choice decides which app you get (see "Renter vs
+  Rental Owner" below). Forgot Password is also implemented. Accounts are real Supabase Auth
+  accounts (email/password), not a local mock — sign-up requires email confirmation (a
+  `velora://auth-callback` deep link finishes the sign-in once you tap the confirmation email),
+  and the session is restored automatically on app restart. `profiles.role` (customer/owner) is
+  the source of truth for which app you get; switching modes from an existing renter account into
+  Owner Mode still goes through the in-app verification form described below.
 - **Renter vs Rental Owner — genuinely different apps, not just a label:**
   - **Renters** get the marketplace: Home browsing/search/filter, Car Details, the full
     booking → rental agreement → payment flow, "My Rents" with Upcoming/Active/Completed tabs.
@@ -138,10 +140,32 @@ Then either:
 
 ## Notes & limitations
 
-- Authentication is a local mock (AsyncStorage) — no real backend. Swap
-  `src/context/AuthContext.tsx`'s `login`/`signup` for real API calls when ready.
-- Payment is a mock UI (`src/screens/payment/PaymentScreen.tsx`) — no real payment gateway is
-  wired up. Swap in Razorpay/Stripe/etc. behind the same "Pay Now" button.
+- **Authentication is real Supabase Auth** (`src/lib/supabase.ts` / `src/context/AuthContext.tsx`)
+  — email/password sign-up with required email confirmation, session persistence/auto-refresh via
+  AsyncStorage, and deep-link handling for the confirmation callback. `profiles.role` drives
+  renter/owner routing. Profile fields with no confirmed `profiles` column (phone, bio, location,
+  owner-verification detail) are kept in an on-device-only cache
+  (`velora.authProfileExtras.v1`) so they survive a full app restart without a schema change.
+- **Known limitation — cross-user profile lookups:** `profiles_select_own` RLS (`id = auth.uid()`
+  only, intentionally not weakened) means `AuthContext.getUserById(id)` can only ever resolve the
+  signed-in user's own profile. `OwnerPublicProfileScreen`, `CustomerProfileScreen`, and Car
+  Details' "Listed by" row fall back to the booking/car record's own name/avatar snapshot instead
+  of a live lookup for anyone but yourself. Fixing this properly needs a deliberate RLS/data
+  design (e.g. a public-safe profile view), not a loosened policy — tracked as a
+  production-hardening item, not fixed here.
+- **Payment is a documented mock gateway abstraction** (`src/lib/paymentGateway.ts`), not a real
+  payment gateway — no card/payment credentials are ever collected or stored. Cash/Pay-Later
+  always succeeds with no charge and stays `unpaid`; other methods simulate a processing delay and
+  a small random decline rate so retry-after-failure is exercised. `Booking.paymentStatus`
+  (unpaid/processing/paid/failed) is tracked separately from the booking's own lifecycle status,
+  so cancellation logic never has to guess about money. Swap `processPayment()` in that one file
+  for a real gateway (Razorpay/Stripe/etc.) when ready — every call site already goes through it.
+- **Car inventory / owner listings are still local-first** (AsyncStorage via `CarsContext`) —
+  only `quantity`/`is_active` are best-effort mirrored to Supabase for availability accounting.
+  The inventory RPCs backing multi-unit availability are prototype-scoped: they enforce atomic
+  overbooking protection, but not full production-grade per-owner authorization the way a real
+  backend would. Treat this the same as the `profiles_select_own` item above — a known, documented
+  limitation, not something silently claimed as production-ready.
 - Images are pulled from Unsplash URLs centralized in `src/data/images.ts` — swap for local
   assets or your own CDN by editing that one file.
 - Dates in the booking flow use a simple +/- day stepper rather than a native calendar picker, to

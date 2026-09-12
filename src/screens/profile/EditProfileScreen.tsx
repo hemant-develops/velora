@@ -11,6 +11,7 @@ import { PrimaryButton } from '../../components/PrimaryButton';
 import { useAuth } from '../../context/AuthContext';
 import { isValidIndianPhone } from '../../utils/format';
 import { getProfileCompleteness } from '../../utils/profile';
+import { showToast } from '../../utils/toast';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'EditProfile'>;
 
@@ -81,6 +82,11 @@ export const EditProfileScreen: React.FC<Props> = ({ navigation }) => {
       ...(user.role === 'owner' ? { bio: bio.trim() } : null),
     });
     setSaving(false);
+    // B3 -- same silent-success gap as OwnerAddCarScreen's Save/Publish:
+    // reuses the existing non-blocking showToast (already proven on the
+    // owner dashboard's Active/Inactive toggle) instead of leaving the save
+    // unconfirmed.
+    showToast('Profile updated');
     navigation.goBack();
   };
 

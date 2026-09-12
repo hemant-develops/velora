@@ -5,7 +5,7 @@ import { colors, radii, spacing, typography } from '../../theme';
 import { useAuth } from '../../context/AuthContext';
 import { useMessages } from '../../context/MessagesContext';
 import { EmptyState } from '../../components/EmptyState';
-import { LoadingState } from '../../components/LoadingState';
+import { MessagesListSkeleton } from '../../components/SkeletonLoader';
 import { Conversation } from '../../types';
 import { useAppNavigation, useTabBarClearance } from '../../navigation/hooks';
 
@@ -27,13 +27,13 @@ export const MessagesScreen: React.FC = () => {
 
   if (!user) return null;
 
-  // Conversations are read from AsyncStorage asynchronously — without this
+  // Conversations are read from Supabase asynchronously — without this
   // gate the list briefly renders as "No messages yet" on every cold start,
   // before any real conversations have had a chance to load in.
   if (!isLoaded) {
     return (
-      <View style={{ flex: 1, backgroundColor: colors.background, paddingTop: insets.top }}>
-        <LoadingState message="Loading conversations..." />
+      <View style={{ flex: 1, backgroundColor: colors.background }}>
+        <MessagesListSkeleton topInset={insets.top} />
       </View>
     );
   }

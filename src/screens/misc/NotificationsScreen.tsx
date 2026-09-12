@@ -1,13 +1,12 @@
 import React from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import { RootStackParamList } from '../../navigation/types';
 import { colors, spacing, typography } from '../../theme';
 import { ScreenHeader } from '../../components/ScreenHeader';
 import { EmptyState } from '../../components/EmptyState';
-import { LoadingState } from '../../components/LoadingState';
+import { NotificationsListSkeleton } from '../../components/SkeletonLoader';
 import { useAuth } from '../../context/AuthContext';
 import { useNotifications } from '../../context/NotificationsContext';
 import { AppNotification, NotificationType } from '../../types';
@@ -30,7 +29,6 @@ const formatTime = (iso: string) => {
 };
 
 export const NotificationsScreen: React.FC<Props> = ({ navigation }) => {
-  const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const { isLoaded, getForUser, getUnreadCountForUser, markRead, markAllReadForUser } = useNotifications();
 
@@ -38,8 +36,9 @@ export const NotificationsScreen: React.FC<Props> = ({ navigation }) => {
 
   if (!isLoaded) {
     return (
-      <View style={{ flex: 1, backgroundColor: colors.background, paddingTop: insets.top }}>
-        <LoadingState message="Loading notifications..." />
+      <View style={{ flex: 1, backgroundColor: colors.background }}>
+        <ScreenHeader title="Notifications" onBack={() => navigation.goBack()} />
+        <NotificationsListSkeleton />
       </View>
     );
   }

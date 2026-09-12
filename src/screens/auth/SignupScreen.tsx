@@ -9,6 +9,7 @@ import { heroImages } from '../../data/images';
 import { InputField } from '../../components/InputField';
 import { PrimaryButton } from '../../components/PrimaryButton';
 import { useAuth } from '../../context/AuthContext';
+import { useRewards } from '../../context/RewardsContext';
 import { UserRole } from '../../types';
 
 type Props = NativeStackScreenProps<AuthStackParamList, 'Signup'>;
@@ -16,18 +17,30 @@ type Props = NativeStackScreenProps<AuthStackParamList, 'Signup'>;
 export const SignupScreen: React.FC<Props> = ({ navigation }) => {
   const insets = useSafeAreaInsets();
   const { signup } = useAuth();
+  const { redeemReferralCode } = useRewards();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [role, setRole] = useState<UserRole>('renter');
+  const [referralCode, setReferralCode] = useState('');
   const [error, setError] = useState<string | undefined>();
+  const [referralNote, setReferralNote] = useState<string | undefined>();
   const [loading, setLoading] = useState(false);
 
   const onSignup = async () => {
     setError(undefined);
     setLoading(true);
     const result = await signup({ name, email, password, confirmPassword, role });
+    // Real referral redemption -- only runs once signup actually issued a
+    // session (result.userId set), and never blocks the account from being
+    // created: an invalid/blank code just skips silently rather than
+    // failing the signup itself, since the referral bonus is a bonus, not
+    // a requirement.
+    if (result.success && result.userId && referralCode.trim()) {
+      const redeemResult = await redeemReferralCode(referralCode, result.userId, name.trim() || 'New user');
+      if (!redeemResult.success) setReferralNote(redeemResult.error);
+    }
     setLoading(false);
     if (!result.success) setError(result.error);
   };
@@ -96,6 +109,19 @@ export const SignupScreen: React.FC<Props> = ({ navigation }) => {
             </Pressable>
           </View>
 
+          <InputField
+            label="Referral Code (optional)"
+            placeholder="VLRXXXXX"
+            leftIcon="gift-outline"
+            autoCapitalize="characters"
+            value={referralCode}
+            onChangeText={(text) => {
+              setReferralCode(text);
+              setReferralNote(undefined);
+            }}
+          />
+          {referralNote ? <Text style={styles.referralNote}>{referralNote}</Text> : null}
+
           {error ? <Text style={styles.errorBanner}>{error}</Text> : null}
 
           <PrimaryButton label="Create Account" onPress={onSignup} loading={loading} style={{ marginTop: spacing.md }} />
@@ -144,5 +170,6 @@ const styles = StyleSheet.create({
   roleSubtitle: { ...typography.bodySm, color: colors.textSecondary, marginTop: 2 },
   roleSubtitleActive: { color: 'rgba(255,255,255,0.7)' },
   errorBanner: { ...typography.bodySm, color: colors.danger, marginBottom: spacing.sm },
+  referralNote: { ...typography.caption, color: colors.warning, marginBottom: spacing.sm },
   demoNote: { ...typography.caption, color: colors.textTertiary, textAlign: 'center', marginTop: spacing.lg },
 });

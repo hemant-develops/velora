@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
@@ -12,7 +12,9 @@ import { EmptyState } from '../../components/EmptyState';
 import { FallbackImage } from '../../components/FallbackImage';
 import { useAuth } from '../../context/AuthContext';
 import { useCars } from '../../context/CarsContext';
+import { useBookings } from '../../context/BookingsContext';
 import { formatCurrency, formatShortDate } from '../../utils/format';
+import { CANCELLATION_POLICY_TEXT } from '../../utils/policy';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Agreement'>;
 // Clears the absolutely-positioned "Agree & Sign" footer below the scroll content.
@@ -22,30 +24,79 @@ export const RentalAgreementScreen: React.FC<Props> = ({ route, navigation }) =>
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const { getCarById } = useCars();
+  const { createBooking } = useBookings();
   const draft = route.params;
   const car = getCarById(draft.carId);
 
   const [agreed, setAgreed] = useState(false);
   const [signature, setSignature] = useState(user?.name ?? '');
+  const [submitting, setSubmitting] = useState(false);
 
   const today = useMemo(() => formatShortDate(new Date().toISOString()), []);
   const canSign = agreed && signature.trim().length > 1;
+  // No new field is stored anywhere for this -- draft.total already has any
+  // promo discount baked in (see BookingScreen), so the discount amount for
+  // display is just the gap between the pre-discount sum and that total.
+  const discount = Math.max(draft.subtotal + draft.taxes + draft.serviceFee - draft.total, 0);
 
   if (!car || !user) {
     return (
-      <View style={{ flex: 1, paddingTop: insets.top }}>
+      <View style={{ flex: 1, backgroundColor: colors.background }}>
+        <ScreenHeader onBack={() => navigation.goBack()} />
         <EmptyState icon="alert-circle-outline" title="Unable to load the rental agreement" />
       </View>
     );
   }
 
-  const onSign = () => {
-    if (!canSign) return;
-    navigation.navigate('Payment', {
-      ...draft,
-      agreementSignedBy: signature.trim(),
-      agreementSignedAt: new Date().toISOString(),
-    });
+  // This is where the booking actually becomes a persistent record --
+  // BEFORE Payment is ever shown, not when the (mock) payment is paid. See
+  // BookingsContext.createBooking: it validates the car/dates, syncs
+  // inventory, and only returns once the Supabase local_car_inventory hold
+  // has actually been granted and the booking is written to the shared
+  // Supabase `bookings` table -- so by the time navigation.navigate('Payment', ...)
+  // below runs, the booking already exists and will show up in My
+  // Rents/the owner's Bookings tab even if the renter backs out of Payment
+  // without ever tapping Pay. paymentMethod is a placeholder here because
+  // it isn't chosen until the next screen -- PaymentScreen records the
+  // actual method and outcome via BookingsContext.recordPaymentResult (M10)
+  // once the renter actually picks one and pays; no other field on the
+  // booking changes after this point.
+  const onSign = async () => {
+    if (!canSign || submitting) return;
+    setSubmitting(true);
+    try {
+      const booking = await createBooking({
+        carId: draft.carId,
+        renterId: user.id,
+        renterName: user.name,
+        renterAvatar: user.avatar,
+        rentalMode: draft.rentalMode,
+        pickupLocation: draft.pickupLocation,
+        dropoffLocation: draft.dropoffLocation,
+        pickupDate: draft.pickupDate,
+        dropoffDate: draft.dropoffDate,
+        pickupTime: draft.pickupTime,
+        dropoffTime: draft.dropoffTime,
+        days: draft.days,
+        subtotal: draft.subtotal,
+        taxes: draft.taxes,
+        serviceFee: draft.serviceFee,
+        total: draft.total,
+        paymentMethod: 'Not selected yet',
+        agreementSignedBy: signature.trim(),
+        agreementSignedAt: new Date().toISOString(),
+      });
+      navigation.navigate('Payment', { bookingId: booking.id });
+    } catch (error) {
+      // Most likely a date-overlap/fully-booked rejection from
+      // BookingsContext, already translated to friendly text there -- no
+      // booking was created, so there's nothing to clean up; the renter
+      // stays on this screen and can go back to pick different dates.
+      const message = error instanceof Error ? error.message : 'Something went wrong while creating your booking.';
+      Alert.alert('Booking Unavailable', message);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -96,17 +147,15 @@ export const RentalAgreementScreen: React.FC<Props> = ({ route, navigation }) =>
           </Text>
 
           <Text style={styles.clauseHeading}>5. Late Return &amp; Cancellation</Text>
-          <Text style={styles.clauseBody}>
-            A late return beyond 60 minutes of the scheduled drop-off time will be billed at an additional day's rate.
-            Cancellations made more than 24 hours before pickup are fully refundable; later cancellations may be
-            subject to a partial service fee.
-          </Text>
+          <Text style={styles.clauseBody}>{CANCELLATION_POLICY_TEXT}</Text>
 
           <Text style={styles.clauseHeading}>6. Payment</Text>
           <Text style={styles.clauseBody}>
             The Renter agrees to pay the total amount of {formatCurrency(draft.total)} (subtotal{' '}
             {formatCurrency(draft.subtotal)} + taxes {formatCurrency(draft.taxes)} + service fee{' '}
-            {formatCurrency(draft.serviceFee)}) via the payment method selected on the next screen.
+            {formatCurrency(draft.serviceFee)}
+            {discount > 0 ? ` - promo discount ${formatCurrency(discount)}` : ''}) via the payment method selected on
+            the next screen.
           </Text>
 
           <Text style={styles.clauseHeading}>7. Liability</Text>
@@ -141,7 +190,12 @@ export const RentalAgreementScreen: React.FC<Props> = ({ route, navigation }) =>
       </ScrollView>
 
       <View style={[styles.footer, shadows.lg, { paddingBottom: insets.bottom + spacing.md }]}>
-        <PrimaryButton label="Sign & Continue to Payment" onPress={onSign} disabled={!canSign} />
+        <PrimaryButton
+          label={submitting ? 'Creating your booking...' : 'Sign & Continue to Payment'}
+          onPress={onSign}
+          disabled={!canSign || submitting}
+          loading={submitting}
+        />
       </View>
     </View>
   );

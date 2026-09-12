@@ -8,6 +8,7 @@ import { FallbackImage } from './FallbackImage';
 import { FavoriteButton } from './FavoriteButton';
 import { formatCurrency } from '../utils/format';
 import { useAuth } from '../context/AuthContext';
+import { usePublicProfile } from '../hooks/usePublicProfile';
 import { useAppNavigation } from '../navigation/hooks';
 
 interface Props {
@@ -19,10 +20,20 @@ interface Props {
 
 export const CarCard: React.FC<Props> = ({ car, onPress, onPressBook, variant = 'large' }) => {
   const isCompact = variant === 'compact';
-  const { user, getUserById } = useAuth();
+  const { user } = useAuth();
   const navigation = useAppNavigation();
-  const owner = getUserById(car.ownerId);
   const isOwnCar = user?.id === car.ownerId;
+  // M10 hardening: previously used the raw AuthContext cache (getUserById),
+  // which only ever resolves the signed-in user's own profile or an id some
+  // other screen already fetched -- so the owner row on this, the single
+  // most-shown card in the whole app (Home, Search, Favorites, Brand lists),
+  // silently disappeared for almost every listing that wasn't the viewer's
+  // own. usePublicProfile resolves it via the same public-safe RPC already
+  // used on Car Details / public profile screens (name + avatar only). For
+  // the viewer's own car, skip the fetch entirely and just show their own
+  // already-loaded profile.
+  const { profile: fetchedOwner } = usePublicProfile(isOwnCar ? undefined : car.ownerId);
+  const owner = isOwnCar ? user : fetchedOwner;
 
   const onPressOwner = () => {
     if (isOwnCar) {
@@ -33,7 +44,15 @@ export const CarCard: React.FC<Props> = ({ car, onPress, onPressBook, variant = 
   };
 
   return (
-    <Pressable onPress={onPress} style={[styles.card, shadows.sm, isCompact ? styles.cardCompact : undefined]}>
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.card,
+        shadows.sm,
+        isCompact ? styles.cardCompact : undefined,
+        pressed ? styles.cardPressed : undefined,
+      ]}
+    >
       <View style={[styles.imageWrap, isCompact ? styles.imageWrapCompact : undefined]}>
         <FallbackImage uri={car.images[0]} style={styles.image} />
         {car.discountPercent ? (
@@ -55,7 +74,13 @@ export const CarCard: React.FC<Props> = ({ car, onPress, onPressBook, variant = 
         {isCompact ? <Rating value={car.rating} reviewCount={car.reviewCount} compact /> : null}
 
         {owner ? (
-          <Pressable style={styles.ownerRow} onPress={onPressOwner} hitSlop={4}>
+          <Pressable
+            style={styles.ownerRow}
+            onPress={onPressOwner}
+            hitSlop={4}
+            accessibilityRole="button"
+            accessibilityLabel={isOwnCar ? 'Your listing' : `View ${owner.name}'s profile`}
+          >
             <FallbackImage uri={owner.avatar} style={styles.ownerAvatar} iconSize={12} />
             <Text style={styles.ownerName} numberOfLines={1}>
               {isOwnCar ? 'Your listing' : owner.name}
@@ -84,7 +109,13 @@ export const CarCard: React.FC<Props> = ({ car, onPress, onPressBook, variant = 
             <Text style={styles.priceUnit}> /day</Text>
           </Text>
           {onPressBook ? (
-            <Pressable style={styles.bookBtn} onPress={onPressBook} hitSlop={6}>
+            <Pressable
+              style={({ pressed }) => [styles.bookBtn, pressed ? styles.bookBtnPressed : undefined]}
+              onPress={onPressBook}
+              hitSlop={6}
+              accessibilityRole="button"
+              accessibilityLabel={`Book ${car.name}`}
+            >
               <Ionicons name="arrow-forward" size={16} color={colors.onPrimary} />
             </Pressable>
           ) : null}
@@ -101,6 +132,11 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
     overflow: 'hidden',
   },
+  // Subtle press feedback (opacity dip) so tapping a listing feels
+  // responsive rather than static -- deliberately cheap (no Animated API,
+  // no scale transform that could jank on lower-end Android devices), just
+  // Pressable's own per-press style function.
+  cardPressed: { opacity: 0.92 },
   cardCompact: { width: 220, marginRight: spacing.md, marginBottom: 0 },
   imageWrap: { width: '100%', height: 170 },
   imageWrapCompact: { height: 130 },
@@ -136,4 +172,5 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  bookBtnPressed: { backgroundColor: colors.primaryDark },
 });

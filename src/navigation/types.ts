@@ -30,11 +30,6 @@ export interface BookingDraft {
   total: number;
 }
 
-export interface SignedBookingDraft extends BookingDraft {
-  agreementSignedBy: string;
-  agreementSignedAt: string;
-}
-
 export type RootStackParamList = {
   // Typed as a real nested-navigator param (not `undefined`) so every
   // `navigation.navigate('Main', { screen: 'SomeTab' })` call site is
@@ -46,7 +41,14 @@ export type RootStackParamList = {
   CarDetails: { carId: string };
   Booking: { carId: string };
   Agreement: BookingDraft;
-  Payment: SignedBookingDraft;
+  // The booking is created/persisted (see BookingsContext.createBooking,
+  // called from RentalAgreementScreen.onSign) BEFORE ever navigating here --
+  // Payment only ever operates on an already-existing Booking record, it
+  // never creates one. Passing just the id (instead of the whole signed
+  // draft) means Payment always reads the current canonical booking state
+  // via useBookings().getBookingById, the same source every other
+  // booking-aware screen reads from.
+  Payment: { bookingId: string };
   BookingConfirmation: { bookingId: string };
   Filter: undefined;
   EditProfile: undefined;
@@ -85,5 +87,15 @@ export type RootStackParamList = {
   PaymentMethods: undefined;
   HelpSupport: undefined;
   Legal: { kind: 'privacy' | 'terms' };
+  // Rewards -- VELORA Credits wallet + Refer & Earn (RewardsContext). New,
+  // additive routes; nothing above them changes.
+  Wallet: undefined;
+  ReferEarn: undefined;
+  Offers: undefined;
   Review: { bookingId: string; carId: string };
+  // M9 -- Trust & Safety. Always about one concrete thing (a listing, a
+  // person, or a conversation) the reporting screen already had on hand --
+  // see the Report type's own comment in types/index.ts for why targetLabel
+  // is passed in here rather than looked up later.
+  Report: { targetKind: 'car' | 'user' | 'conversation'; targetId: string; targetLabel: string };
 };

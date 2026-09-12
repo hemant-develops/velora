@@ -11,6 +11,10 @@ interface Props {
 export const Chip: React.FC<Props> = ({ label, selected, onPress }) => (
   <Pressable
     onPress={onPress}
+    hitSlop={4}
+    accessibilityRole="button"
+    accessibilityLabel={label}
+    accessibilityState={{ selected }}
     style={[styles.chip, selected ? styles.chipSelected : undefined]}
   >
     <Text style={[typography.bodySm, styles.text, selected ? styles.textSelected : undefined]}>{label}</Text>

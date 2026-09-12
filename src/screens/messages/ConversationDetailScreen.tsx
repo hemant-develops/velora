@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { FlatList, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, FlatList, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
@@ -9,7 +9,7 @@ import { useAuth } from '../../context/AuthContext';
 import { useMessages } from '../../context/MessagesContext';
 import { ScreenHeader } from '../../components/ScreenHeader';
 import { EmptyState } from '../../components/EmptyState';
-import { ChatMessage } from '../../types';
+import { ChatMessage, Conversation } from '../../types';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ConversationDetail'>;
 
@@ -20,13 +20,25 @@ export const ConversationDetailScreen: React.FC<Props> = ({ route, navigation })
   const { user } = useAuth();
   const { getConversation, sendMessage, markRead } = useMessages();
   const [conversationId, setConversationId] = useState(route.params.conversationId);
-  const conversation = conversationId ? getConversation(conversationId) : undefined;
+  const rawConversation = conversationId ? getConversation(conversationId) : undefined;
+  // Final-verification fix -- getConversation(id) resolves ANY conversation
+  // by id with no participant check of its own (it can't know who's asking).
+  // Every real entry point only ever passes an id belonging to the current
+  // user, but nothing previously stopped a foreign/guessed id from rendering
+  // another renter/owner's full message thread here. This is the actual
+  // ownership check for "conversation access control".
+  const conversation =
+    rawConversation && user && (rawConversation.renterId === user.id || rawConversation.ownerId === user.id)
+      ? rawConversation
+      : undefined;
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
 
   useEffect(() => {
-    if (conversationId && user) markRead(conversationId, user.role);
-  }, [conversationId, user?.role]);
+    // Gated on the ownership-checked `conversation`, not the raw id, so a
+    // foreign/guessed conversationId can't be marked read either.
+    if (conversation && user) markRead(conversation.id, user.role);
+  }, [conversation, user?.role]);
 
   if (!user) return null;
 
@@ -71,56 +83,81 @@ export const ConversationDetailScreen: React.FC<Props> = ({ route, navigation })
 
   const onSend = async () => {
     if (!draft.trim() || sending) return;
-
-    if (conversation) {
-      setSending(true);
-      const text = draft.trim();
-      setDraft('');
-      const result = await sendMessage({
-        conversationId: conversation.id,
-        senderId: user.id,
-        senderRole: user.role,
-        text,
-      });
-      setConversationId(result.id);
-      setSending(false);
-      return;
-    }
-
-    const carId = route.params.carId;
-    const ownerId = route.params.ownerId;
-    if (!carId || !ownerId) return;
-
     setSending(true);
     const text = draft.trim();
     setDraft('');
-    const result = await sendMessage({
-      senderId: user.id,
-      senderRole: user.role,
-      text,
-      startInfo: {
-        carId,
-        carName: route.params.carName ?? 'Car',
-        // Default to "current user is the renter" — true for every
-        // pre-existing entry point (Car Details, an owner's public
-        // profile). Booking Details/a customer's profile pass the
-        // real renter explicitly instead, since there the current
-        // user is the OWNER, not the renter, replying to a customer.
-        renterId: route.params.renterId ?? user.id,
-        renterName: route.params.renterName ?? user.name,
-        renterAvatar: route.params.renterAvatar ?? user.avatar,
-        ownerId,
-        ownerName: route.params.ownerName ?? 'Owner',
-        ownerAvatar: route.params.ownerAvatar ?? '',
-      },
-    });
-    setConversationId(result.id);
-    setSending(false);
+
+    // MULTI-DEVICE MIGRATION -- sendMessage now writes to Supabase and can
+    // genuinely throw (a network hiccup, a race on starting a new thread).
+    // Without this try/catch, that throw was an unhandled promise
+    // rejection: `sending` never reset (the send button stayed stuck
+    // disabled) and the already-cleared draft text was simply lost with no
+    // way to recover it. Now a failure restores the draft so nothing typed
+    // is lost, and tells the renter/owner plainly so they can retry.
+    try {
+      let result: Conversation;
+      if (conversation) {
+        result = await sendMessage({ conversationId: conversation.id, senderId: user.id, senderRole: user.role, text });
+      } else {
+        if (!freshCarId || !freshOwnerId) {
+          // Unreachable in practice — the render guard above already blocks a
+          // fresh thread from opening without both ids — but checking here
+          // (inside this callback, where the values are actually used) is
+          // what lets TypeScript treat them as definite strings below,
+          // without a non-null assertion.
+          setSending(false);
+          return;
+        }
+        result = await sendMessage({
+          senderId: user.id,
+          senderRole: user.role,
+          text,
+          startInfo: {
+            carId: freshCarId,
+            carName: route.params.carName ?? 'Car',
+            // Default to "current user is the renter" — true for every
+            // pre-existing entry point (Car Details, an owner's public
+            // profile). Booking Details/a customer's profile pass the
+            // real renter explicitly instead, since there the current
+            // user is the OWNER, not the renter, replying to a customer.
+            renterId: route.params.renterId ?? user.id,
+            renterName: route.params.renterName ?? user.name,
+            renterAvatar: route.params.renterAvatar ?? user.avatar,
+            ownerId: freshOwnerId,
+            ownerName: route.params.ownerName ?? 'Owner',
+            ownerAvatar: route.params.ownerAvatar ?? '',
+          },
+        });
+      }
+      setConversationId(result.id);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      console.log(`VELORA_SEND_MESSAGE_FAILED: ${message}`);
+      setDraft(text);
+      Alert.alert("Couldn't send message", 'Please check your connection and try again.');
+    } finally {
+      setSending(false);
+    }
   };
 
   return (
     <KeyboardAvoidingView style={{ flex: 1, backgroundColor: colors.background }} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={insets.top}>
-      <ScreenHeader title={partnerName} onBack={() => navigation.goBack()} style={styles.header} />
+      <ScreenHeader
+        title={partnerName}
+        onBack={() => navigation.goBack()}
+        style={styles.header}
+        right={
+          conversation ? (
+            <Pressable
+              onPress={() => navigation.navigate('Report', { targetKind: 'conversation', targetId: conversation.id, targetLabel: partnerName })}
+              accessibilityLabel="Report this conversation"
+              hitSlop={8}
+            >
+              <Ionicons name="flag-outline" size={20} color={colors.textSecondary} />
+            </Pressable>
+          ) : undefined
+        }
+      />
 
       <FlatList
         data={messages}

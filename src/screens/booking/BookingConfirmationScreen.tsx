@@ -5,10 +5,12 @@ import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import { RootStackParamList } from '../../navigation/types';
 import { colors, radii, spacing, typography } from '../../theme';
+import { useAuth } from '../../context/AuthContext';
 import { useCars } from '../../context/CarsContext';
 import { useBookings } from '../../context/BookingsContext';
 import { PrimaryButton } from '../../components/PrimaryButton';
 import { EmptyState } from '../../components/EmptyState';
+import { ScreenHeader } from '../../components/ScreenHeader';
 import { formatCurrency, formatShortDate } from '../../utils/format';
 import { FallbackImage } from '../../components/FallbackImage';
 
@@ -16,14 +18,22 @@ type Props = NativeStackScreenProps<RootStackParamList, 'BookingConfirmation'>;
 
 export const BookingConfirmationScreen: React.FC<Props> = ({ route, navigation }) => {
   const insets = useSafeAreaInsets();
+  const { user } = useAuth();
   const { bookings } = useBookings();
   const { getCarById } = useCars();
-  const booking = bookings.find((b) => b.id === route.params.bookingId);
+  const rawBooking = bookings.find((b) => b.id === route.params.bookingId);
+  // Final-verification fix -- same ownership check as BookingDetails/Payment:
+  // this always resolves the renter's own just-created booking in the real
+  // flow (RentalAgreement -> Payment -> here), but nothing previously
+  // stopped a foreign/guessed bookingId from rendering someone else's
+  // confirmation details.
+  const booking = rawBooking && user && rawBooking.renterId === user.id ? rawBooking : undefined;
   const car = booking ? getCarById(booking.carId) : undefined;
 
   if (!booking || !car) {
     return (
-      <View style={{ flex: 1, paddingTop: insets.top }}>
+      <View style={{ flex: 1, backgroundColor: colors.background }}>
+        <ScreenHeader onBack={() => navigation.goBack()} />
         <EmptyState icon="alert-circle-outline" title="Booking not found" />
       </View>
     );
@@ -34,6 +44,13 @@ export const BookingConfirmationScreen: React.FC<Props> = ({ route, navigation }
   // to accept, not a done deal yet, so the copy reflects that rather than
   // claiming a confirmation that hasn't happened.
   const isPending = booking.status === 'pending';
+  // M10 -- this screen is only ever reached after PaymentScreen recorded a
+  // successful outcome (paid, or 'unpaid' for Cash/Pay Later) -- a failed
+  // attempt keeps the renter on Payment to retry, it never navigates here.
+  // Still, never claim "Total Paid" for a Cash booking that hasn't actually
+  // been charged -- that's the whole point of tracking paymentStatus
+  // separately from booking.status (see the Booking.paymentStatus comment).
+  const isUnpaid = booking.paymentStatus === 'unpaid';
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
@@ -79,7 +96,7 @@ export const BookingConfirmationScreen: React.FC<Props> = ({ route, navigation }
             <Text style={styles.value}>{booking.days} day{booking.days === 1 ? '' : 's'}</Text>
           </View>
           <View style={styles.row}>
-            <Text style={styles.label}>Paid via</Text>
+            <Text style={styles.label}>{isUnpaid ? 'Payment method' : 'Paid via'}</Text>
             <Text style={styles.value}>{booking.paymentMethod}</Text>
           </View>
           <View style={styles.row}>
@@ -90,7 +107,7 @@ export const BookingConfirmationScreen: React.FC<Props> = ({ route, navigation }
           <View style={styles.divider} />
 
           <View style={styles.row}>
-            <Text style={styles.totalLabel}>Total Paid</Text>
+            <Text style={styles.totalLabel}>{isUnpaid ? 'Total Due at Pickup' : 'Total Paid'}</Text>
             <Text style={styles.totalValue}>{formatCurrency(booking.total)}</Text>
           </View>
         </View>

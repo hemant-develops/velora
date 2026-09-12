@@ -2,16 +2,19 @@ import React from 'react';
 import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { colors, radii, shadows, spacing, typography } from '../../theme';
 import { useAuth } from '../../context/AuthContext';
 import { useCars } from '../../context/CarsContext';
 import { useBookings } from '../../context/BookingsContext';
 import { useNotifications } from '../../context/NotificationsContext';
+import { useRewards } from '../../context/RewardsContext';
 import { ProfileMenuItem } from '../../components/ProfileMenuItem';
 import { PrimaryButton } from '../../components/PrimaryButton';
 import { ProfileCompleteBadge } from '../../components/ProfileCompleteBadge';
 import { formatCurrency, formatDate } from '../../utils/format';
 import { getProfileCompleteness } from '../../utils/profile';
+import { SUPPORT_EMAIL } from '../../utils/policy';
 import { useAppNavigation, useTabBarClearance } from '../../navigation/hooks';
 
 export const ProfileScreen: React.FC = () => {
@@ -19,12 +22,14 @@ export const ProfileScreen: React.FC = () => {
   const tabBarClearance = useTabBarClearance();
   const { user, logout, switchRole } = useAuth();
   const { getCarsByOwner } = useCars();
-  const { getBookingsForCars } = useBookings();
+  const { getBookingsForCars, resetLocalBookingsForTesting } = useBookings();
   const { getUnreadCountForUser } = useNotifications();
+  const { getBalance } = useRewards();
   const navigation = useAppNavigation();
 
   if (!user) return null;
 
+  const walletBalance = getBalance(user.id);
   const isOwner = user.role === 'owner';
   const isVerifiedOwner = user.ownerVerification?.status === 'verified';
   const completeness = getProfileCompleteness(user);
@@ -42,6 +47,59 @@ export const ProfileScreen: React.FC = () => {
       { text: 'Cancel', style: 'cancel' },
       { text: 'Log Out', style: 'destructive', onPress: logout },
     ]);
+  };
+
+  // Real, working account-deletion entry point (not a decorative screen):
+  // signs the account out immediately (the one part of "delete my account"
+  // VELORA can safely do from the client today), then hands off to a real,
+  // working channel -- the same support inbox HelpSupportScreen's Contact
+  // form uses -- for the actual data-deletion request. A full self-serve
+  // "erase my account from the database" action needs a privileged
+  // server-side call this app doesn't have (and the backend/auth freeze
+  // means one isn't added here) -- flagged plainly rather than faked.
+  const onDeleteAccount = () => {
+    Alert.alert(
+      'Delete Account',
+      `This will sign you out now. To fully delete your account and data from VELORA's systems, email us at ${SUPPORT_EMAIL} from your registered email (${user.email}) and we'll process it.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Sign Out & Continue', style: 'destructive', onPress: logout },
+      ],
+    );
+  };
+
+  // DEV-ONLY -- lets a developer clear out old test bookings (see
+  // BookingsContext.resetLocalBookingsForTesting) without needing any
+  // database tool, e.g. when a test car appears permanently "fully booked"
+  // purely because of leftover bookings from earlier manual testing, not a
+  // real availability bug. resetLocalBookingsForTesting only ever exists
+  // on the context value when __DEV__ is true, so this whole block renders
+  // nothing at all in a production/release build -- it's tucked into the
+  // very bottom of Profile as a small, muted, easy-to-ignore row rather
+  // than a floating control shown on every screen.
+  // MULTI-DEVICE MIGRATION -- bookings are no longer local-only, so this
+  // copy was corrected: it now deletes real rows from the shared Supabase
+  // `bookings` table (only this account's OWN bookings made as a renter --
+  // RLS's bookings_delete policy makes it impossible to delete a booking
+  // someone else made on your car listing), not "local device" data.
+  const onDevResetBookings = () => {
+    Alert.alert(
+      'Reset your test bookings?',
+      "Developer-only: permanently deletes every booking YOU made as a renter, from Supabase. It won't touch bookings other test accounts made on your car listings.",
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Reset',
+          style: 'destructive',
+          onPress: () => {
+            resetLocalBookingsForTesting?.().catch((error: unknown) => {
+              const message = error instanceof Error ? error.message : 'Unknown error';
+              console.log(`VELORA_DEV_BOOKING_RESET_FAILED: ${message}`);
+            });
+          },
+        },
+      ],
+    );
   };
 
   const onToggleRole = () => {
@@ -164,17 +222,51 @@ export const ProfileScreen: React.FC = () => {
           style={{ marginBottom: spacing.xl }}
         />
       ) : (
-        <View style={{ marginBottom: spacing.xl }}>
-          <PrimaryButton
-            label="Become a Rental Owner"
-            onPress={() => navigation.navigate('OwnerVerification')}
-            variant="outline"
-          />
-          <Text style={styles.becomeOwnerHint}>
-            Verify your details once to start listing your own cars for rent.
-          </Text>
-        </View>
+        // B3.5 -- elevated from a plain outline button + caption into a
+        // proper promotional banner, since this is VELORA's one real
+        // "supply side" entry point (become an owner). Deliberately no
+        // invented earnings figure ("earn up to ₹X/month") -- VELORA has no
+        // real basis for a number like that, unlike the marketplace
+        // pattern this was inspired by, so the copy stays honest and
+        // generic while still getting the same visual prominence.
+        <Pressable
+          onPress={() => navigation.navigate('OwnerVerification')}
+          style={{ marginBottom: spacing.xl }}
+          accessibilityRole="button"
+          accessibilityLabel="Become a rental owner"
+        >
+          <LinearGradient
+            colors={[colors.primary, colors.primaryDark]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={[styles.ownerBanner, shadows.sm]}
+          >
+            <View style={styles.ownerBannerIconWrap}>
+              <Ionicons name="car-sport" size={22} color={colors.onPrimary} />
+            </View>
+            <View style={{ flex: 1, marginLeft: spacing.sm }}>
+              <Text style={styles.ownerBannerTitle}>Have a car sitting idle?</Text>
+              <Text style={styles.ownerBannerBody}>List it on VELORA and start earning from bookings.</Text>
+              <Text style={styles.ownerBannerCta}>Get Started</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.onPrimary} />
+          </LinearGradient>
+        </Pressable>
       )}
+
+      {/* VELORA Credits -- a real wallet balance (RewardsContext), shown for
+          both roles since either can earn credits via Refer & Earn and
+          either can spend them at checkout as a renter. */}
+      <Pressable style={[styles.walletCard, shadows.sm]} onPress={() => navigation.navigate('Wallet')}>
+        <View style={styles.walletIconWrap}>
+          <Ionicons name="wallet-outline" size={20} color={colors.primaryDark} />
+        </View>
+        <View style={{ flex: 1, marginLeft: spacing.sm }}>
+          <Text style={styles.walletLabel}>VELORA Credits</Text>
+          <Text style={styles.walletValue}>{formatCurrency(walletBalance)}</Text>
+        </View>
+        <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+      </Pressable>
 
       {/* An owner account only ever sees its own profile details and the
           settings below — booking/commerce-only items (My Bookings,
@@ -182,6 +274,7 @@ export const ProfileScreen: React.FC = () => {
           are intentionally left out here so the two roles stay separate. */}
       <View style={styles.menu}>
         <ProfileMenuItem icon="person-outline" label="Edit Profile" onPress={() => navigation.navigate('EditProfile')} />
+        <ProfileMenuItem icon="gift-outline" label="Refer & Earn" onPress={() => navigation.navigate('ReferEarn')} />
         {!isOwner ? (
           <>
             <ProfileMenuItem
@@ -191,6 +284,7 @@ export const ProfileScreen: React.FC = () => {
             />
             <ProfileMenuItem icon="heart-outline" label="Favorites" onPress={() => navigation.navigate('Favorites')} />
             <ProfileMenuItem icon="card-outline" label="Payment Methods" onPress={() => navigation.navigate('PaymentMethods')} />
+            <ProfileMenuItem icon="pricetag-outline" label="Offers" onPress={() => navigation.navigate('Offers')} />
           </>
         ) : null}
         <ProfileMenuItem
@@ -203,7 +297,15 @@ export const ProfileScreen: React.FC = () => {
         <ProfileMenuItem icon="document-text-outline" label="Terms & Conditions" onPress={() => navigation.navigate('Legal', { kind: 'terms' })} />
         <ProfileMenuItem icon="help-circle-outline" label="Help & Support" onPress={() => navigation.navigate('HelpSupport')} />
         <ProfileMenuItem icon="log-out-outline" label="Logout" onPress={onLogout} destructive />
+        <ProfileMenuItem icon="trash-outline" label="Delete Account" onPress={onDeleteAccount} destructive />
       </View>
+
+      {__DEV__ && resetLocalBookingsForTesting ? (
+        <Pressable onPress={onDevResetBookings} style={styles.devRow} hitSlop={8}>
+          <Ionicons name="bug-outline" size={13} color={colors.textTertiary} />
+          <Text style={styles.devRowText}>Developer: Reset My Test Bookings</Text>
+        </Pressable>
+      ) : null}
     </ScrollView>
   );
 };
@@ -264,6 +366,37 @@ const styles = StyleSheet.create({
   },
   earningsLabel: { ...typography.bodySm, color: 'rgba(255,255,255,0.7)' },
   earningsValue: { ...typography.headingMd, color: colors.primary, marginTop: 2 },
-  becomeOwnerHint: { ...typography.bodySm, color: colors.textSecondary, marginTop: spacing.xs, textAlign: 'center' },
+  ownerBanner: { flexDirection: 'row', alignItems: 'center', borderRadius: radii.lg, padding: spacing.md },
+  ownerBannerIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(26,26,36,0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  ownerBannerTitle: { ...typography.titleLg, color: colors.onPrimary },
+  ownerBannerBody: { ...typography.bodySm, color: colors.onPrimary, opacity: 0.85, marginTop: 2, lineHeight: 18 },
+  ownerBannerCta: { ...typography.bodySm, color: colors.onPrimary, fontWeight: '700', marginTop: 6 },
+  walletCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.card,
+    borderRadius: radii.lg,
+    padding: spacing.md,
+    marginBottom: spacing.lg,
+  },
+  walletIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(244,199,40,0.16)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  walletLabel: { ...typography.bodySm, color: colors.textSecondary },
+  walletValue: { ...typography.headingSm, color: colors.textPrimary, marginTop: 2 },
   menu: { borderTopWidth: 1, borderTopColor: colors.borderLight },
+  devRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: spacing.lg, paddingVertical: spacing.sm },
+  devRowText: { ...typography.caption, color: colors.textTertiary, marginLeft: 6 },
 });

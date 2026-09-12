@@ -1,7 +1,7 @@
 import React from 'react';
 import { Pressable, StyleSheet, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { colors, radii, spacing, typography } from '../theme';
+import { colors, radii, shadows, spacing, typography } from '../theme';
 
 interface Props {
   value: string;
@@ -19,7 +19,7 @@ export const SearchBar: React.FC<Props> = ({
   placeholder = 'Search for cars or brands',
 }) => (
   <View style={styles.row}>
-    <View style={styles.searchBox}>
+    <View style={[styles.searchBox, shadows.xs]}>
       <Ionicons name="search" size={18} color={colors.textTertiary} />
       <TextInput
         value={value}
@@ -36,8 +36,13 @@ export const SearchBar: React.FC<Props> = ({
       ) : null}
     </View>
     {onPressFilter ? (
-      <Pressable style={styles.filterBtn} onPress={onPressFilter} accessibilityLabel="Open filters">
-        <Ionicons name="options-outline" size={20} color={colors.textPrimary} />
+      <Pressable
+        style={({ pressed }) => [styles.filterBtn, shadows.xs, pressed ? { opacity: 0.85 } : undefined]}
+        onPress={onPressFilter}
+        accessibilityRole="button"
+        accessibilityLabel="Open filters"
+      >
+        <Ionicons name="options-outline" size={20} color={colors.textInverse} />
         {filterBadgeCount > 0 ? (
           <View style={styles.badge}>
             <Ionicons name="ellipse" size={8} color={colors.primary} />
@@ -54,7 +59,7 @@ const styles = StyleSheet.create({
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: colors.surface,
+    backgroundColor: colors.card,
     borderRadius: radii.md,
     paddingHorizontal: spacing.md,
     height: 50,

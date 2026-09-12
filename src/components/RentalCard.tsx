@@ -25,7 +25,10 @@ export const RentalCard: React.FC<Props> = ({ booking, car, onPress, style }) =>
   const status = statusStyles[booking.status];
 
   return (
-    <Pressable style={[styles.card, shadows.sm, style]} onPress={onPress}>
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [styles.card, shadows.sm, style, pressed ? styles.cardPressed : undefined]}
+    >
       <FallbackImage uri={car?.images[0]} style={styles.image} />
       <View style={styles.info}>
         <View style={styles.topRow}>
@@ -36,6 +39,7 @@ export const RentalCard: React.FC<Props> = ({ booking, car, onPress, style }) =>
             <Text style={[styles.statusText, { color: status.fg }]}>{status.label}</Text>
           </View>
         </View>
+        <Text style={styles.bookingId} numberOfLines={1}>#{booking.id}</Text>
         <Text style={styles.dates}>
           {formatShortDate(booking.pickupDate)} - {formatShortDate(booking.dropoffDate)} · {booking.days} day
           {booking.days === 1 ? '' : 's'}
@@ -54,11 +58,15 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
     overflow: 'hidden',
   },
+  // Same cheap opacity-dip press feedback as CarCard -- no Animated API,
+  // just Pressable's own per-press style function.
+  cardPressed: { opacity: 0.92 },
   image: { width: 96, height: '100%', minHeight: 100, backgroundColor: colors.surface },
   info: { flex: 1, padding: spacing.md },
   topRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   statusPill: { paddingHorizontal: 10, paddingVertical: 3, borderRadius: radii.pill, marginLeft: 6 },
   statusText: { ...typography.caption, fontWeight: '700' },
+  bookingId: { ...typography.caption, color: colors.textTertiary, marginTop: 4 },
   dates: { ...typography.bodySm, color: colors.textSecondary, marginTop: 6 },
   total: { ...typography.headingSm, color: colors.textPrimary, marginTop: 8 },
 });

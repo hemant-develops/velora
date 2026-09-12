@@ -1,15 +1,14 @@
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { storage } from '../utils/storage';
 import { useAuth } from './AuthContext';
+import { supabase } from '../lib/supabase';
 
-// Pre-fix builds stored every account's favorites under this single global
-// key, so User A's favorites would show up for User B on the same device.
-// It's kept around only so the one-time migration below can adopt it into
-// whichever account happens to log in first after this fix ships, instead of
-// silently discarding data people already had.
-const LEGACY_GLOBAL_KEY = 'velora.favorites.v1';
-
-const favoritesKeyFor = (userId: string) => `velora.favorites.v1.${userId}`;
+// MULTI-DEVICE MIGRATION -- favorites used to live only in this device's
+// AsyncStorage (per-user key `velora.favorites.v1.<userId>`), so favoriting
+// a car on your phone never showed up if you opened VELORA on a second
+// device signed into the same account. They now live in the real, shared
+// `public.favorites` table (see supabase_migration_multidevice.sql),
+// RLS-scoped strictly to `user_id = auth.uid()` -- nobody but the owning
+// account can ever read or write their own favorites list.
 
 interface FavoritesContextValue {
   favoriteIds: string[];
@@ -24,60 +23,55 @@ export const FavoritesProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const userId = user?.id;
   const [favoriteIds, setFavoriteIds] = useState<string[]>([]);
 
-  // Guards against a slow load for the previous account resolving *after*
+  // Guards against a slow fetch for the previous account resolving *after*
   // the user has already logged out/switched accounts, which would
   // otherwise briefly stamp the new account's screen with the old
-  // account's favorites (a race between login/logout and the async
-  // storage read below).
+  // account's favorites.
   const activeUserIdRef = useRef<string | undefined>(userId);
 
   useEffect(() => {
     activeUserIdRef.current = userId;
 
     if (!userId) {
-      // Logged out (or auth still resolving) — nothing to show, and
-      // nothing that belongs to a specific account to keep in memory.
+      // Logged out (or auth still resolving) — nothing to show.
       setFavoriteIds([]);
       return;
     }
 
     (async () => {
-      const key = favoritesKeyFor(userId);
-      let raw = await storage.getItem(key);
-
-      // One-time migration: if this account has never had its own
-      // favorites saved yet, but the old shared list still has data in
-      // it, adopt that data into this account and retire the legacy key
-      // so it can't also get handed to a second account later.
-      if (raw === null) {
-        const legacyRaw = await storage.getItem(LEGACY_GLOBAL_KEY);
-        if (legacyRaw !== null) {
-          await storage.setItem(key, legacyRaw);
-          await storage.removeItem(LEGACY_GLOBAL_KEY);
-          raw = legacyRaw;
-        }
+      const { data, error } = await supabase.from('favorites').select('car_id').eq('user_id', userId);
+      if (activeUserIdRef.current !== userId) return; // stale result, account switched again mid-flight
+      if (error) {
+        console.log(`VELORA_FAVORITES_FETCH_ERROR: ${error.message}`);
+        return;
       }
-
-      // The account switched again while this read was in flight — don't
-      // apply a now-stale result.
-      if (activeUserIdRef.current !== userId) return;
-
-      setFavoriteIds(raw ? JSON.parse(raw) : []);
+      setFavoriteIds((data ?? []).map((row: { car_id: string }) => row.car_id));
     })();
   }, [userId]);
 
-  const persist = async (ids: string[]) => {
-    if (!userId) return;
-    setFavoriteIds(ids);
-    await storage.setItem(favoritesKeyFor(userId), JSON.stringify(ids));
-  };
-
   const toggleFavorite = (carId: string) => {
     if (!userId) return;
-    const next = favoriteIds.includes(carId)
-      ? favoriteIds.filter((id) => id !== carId)
-      : [...favoriteIds, carId];
-    persist(next);
+    const isCurrentlyFavorite = favoriteIds.includes(carId);
+    // Optimistic update -- same instant-feedback feel as the previous
+    // local-only version, with the real write happening alongside it.
+    setFavoriteIds((prev) => (isCurrentlyFavorite ? prev.filter((id) => id !== carId) : [...prev, carId]));
+    if (isCurrentlyFavorite) {
+      supabase
+        .from('favorites')
+        .delete()
+        .eq('user_id', userId)
+        .eq('car_id', carId)
+        .then(({ error }) => {
+          if (error) console.log(`VELORA_FAVORITES_DELETE_ERROR: ${error.message}`);
+        });
+    } else {
+      supabase
+        .from('favorites')
+        .insert({ user_id: userId, car_id: carId })
+        .then(({ error }) => {
+          if (error) console.log(`VELORA_FAVORITES_INSERT_ERROR: ${error.message}`);
+        });
+    }
   };
 
   const value = useMemo<FavoritesContextValue>(

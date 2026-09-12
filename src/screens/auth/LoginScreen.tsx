@@ -113,24 +113,15 @@ export const LoginScreen: React.FC<Props> = ({ navigation }) => {
 
           <PrimaryButton label={role === 'owner' ? 'Login as Owner' : 'Login'} onPress={onLogin} loading={loading} />
 
-          <View style={styles.orRow}>
-            <View style={styles.orLine} />
-            <Text style={styles.orText}>Or</Text>
-            <View style={styles.orLine} />
-          </View>
+          {/* Real, working Google/Apple sign-in needs an OAuth app registered
+              in Google Cloud / Apple Developer consoles and wired into
+              Supabase's Auth providers -- external developer-account setup
+              this session can't create, the same category as the payment
+              gateway and government KYC. A button that quietly logged in
+              with blank credentials (the previous behavior here) was worse
+              than not having it, so it's left out rather than faked. */}
 
-          <View style={styles.socialRow}>
-            <Pressable style={styles.socialBtn} onPress={onLogin}>
-              <Ionicons name="logo-google" size={18} color={colors.textPrimary} />
-              <Text style={styles.socialText}>Google</Text>
-            </Pressable>
-            <Pressable style={styles.socialBtn} onPress={onLogin}>
-              <Ionicons name="logo-apple" size={18} color={colors.textPrimary} />
-              <Text style={styles.socialText}>Apple</Text>
-            </Pressable>
-          </View>
-
-          <Text style={styles.demoNote}>Demo mode: any email &amp; password logs you in instantly, in the mode you pick above.</Text>
+          <Text style={styles.demoNote}>Use the email and password you signed up with.</Text>
         </View>
       </ScrollView>
     </KeyboardAvoidingView>
@@ -182,21 +173,5 @@ const styles = StyleSheet.create({
   errorBanner: { ...typography.bodySm, color: colors.danger, marginBottom: spacing.sm },
   infoBanner: { ...typography.bodySm, color: colors.info, marginBottom: spacing.sm },
   forgot: { ...typography.titleMd, color: colors.textPrimary },
-  orRow: { flexDirection: 'row', alignItems: 'center', marginVertical: spacing.lg },
-  orLine: { flex: 1, height: 1, backgroundColor: colors.border },
-  orText: { ...typography.bodySm, color: colors.textSecondary, marginHorizontal: spacing.sm },
-  socialRow: { flexDirection: 'row' },
-  socialBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    height: 52,
-    borderRadius: radii.md,
-    borderWidth: 1.5,
-    borderColor: colors.border,
-    marginRight: spacing.sm,
-  },
-  socialText: { ...typography.titleMd, color: colors.textPrimary, marginLeft: 8 },
   demoNote: { ...typography.caption, color: colors.textTertiary, textAlign: 'center', marginTop: spacing.lg },
 });

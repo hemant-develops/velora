@@ -9,6 +9,8 @@ import { BookingsProvider } from './src/context/BookingsContext';
 import { CarsProvider } from './src/context/CarsContext';
 import { MessagesProvider } from './src/context/MessagesContext';
 import { ReviewsProvider } from './src/context/ReviewsContext';
+import { ReportsProvider } from './src/context/ReportsContext';
+import { RewardsProvider } from './src/context/RewardsContext';
 import { AppNavigation } from './src/navigation/AppNavigation';
 import { ErrorBoundary } from './src/components/ErrorBoundary';
 
@@ -22,14 +24,18 @@ export default function App() {
               <CarsProvider>
                 <FavoritesProvider>
                   <BookingsProvider>
-                    <MessagesProvider>
-                      <ReviewsProvider>
-                        <StatusBar style="dark" />
-                        <ErrorBoundary>
-                          <AppNavigation />
-                        </ErrorBoundary>
-                      </ReviewsProvider>
-                    </MessagesProvider>
+                    <RewardsProvider>
+                      <MessagesProvider>
+                        <ReviewsProvider>
+                          <ReportsProvider>
+                            <StatusBar style="dark" />
+                            <ErrorBoundary>
+                              <AppNavigation />
+                            </ErrorBoundary>
+                          </ReportsProvider>
+                        </ReviewsProvider>
+                      </MessagesProvider>
+                    </RewardsProvider>
                   </BookingsProvider>
                 </FavoritesProvider>
               </CarsProvider>

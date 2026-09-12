@@ -26,7 +26,19 @@ export const generateBookingId = (): string => {
   const y = now.getFullYear();
   const m = String(now.getMonth() + 1).padStart(2, '0');
   const d = String(now.getDate()).padStart(2, '0');
-  const suffix = Math.floor(100 + Math.random() * 900);
+  // The visible date prefix is kept purely for readability -- uniqueness
+  // actually comes from milliseconds-since-epoch (base36) plus a random
+  // base36 tail, the same entropy pattern generateId() above already uses.
+  // The previous version used only Math.floor(100 + Math.random() * 900)
+  // (900 possible suffixes per calendar day), which is a real collision
+  // risk: this id is both the local Booking's primary key and the
+  // p_booking_id passed to create_local_car_booking_hold, whose backing
+  // table has `id text primary key` -- a collision would silently corrupt
+  // a local lookup or throw a raw duplicate-key error from Supabase
+  // instead of a friendly booking error. This keeps the exact same
+  // human-readable VLR-YYYYMMDD-... shape while making a collision
+  // astronomically unlikely.
+  const suffix = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
   return `VLR-${y}${m}${d}-${suffix}`;
 };
 

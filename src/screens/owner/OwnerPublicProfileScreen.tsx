@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
@@ -10,10 +10,13 @@ import { PrimaryButton } from '../../components/PrimaryButton';
 import { FallbackImage } from '../../components/FallbackImage';
 import { Rating } from '../../components/Rating';
 import { ProfileCompleteBadge } from '../../components/ProfileCompleteBadge';
+import { PublicProfileSkeleton } from '../../components/SkeletonLoader';
 import { useAuth } from '../../context/AuthContext';
 import { useCars } from '../../context/CarsContext';
+import { usePublicProfile } from '../../hooks/usePublicProfile';
 import { formatCurrency, formatDate } from '../../utils/format';
 import { getProfileCompleteness } from '../../utils/profile';
+import { fetchHostReliability, HostReliability } from '../../utils/hostReliability';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'OwnerProfile'>;
 
@@ -23,10 +26,35 @@ type Props = NativeStackScreenProps<RootStackParamList, 'OwnerProfile'>;
 // Verification submission (ID number, etc.) -- only a "Verified" badge
 // derived from its status.
 export const OwnerPublicProfileScreen: React.FC<Props> = ({ route, navigation }) => {
-  const { user: currentUser, getUserById } = useAuth();
+  const { user: currentUser } = useAuth();
   const { getCarsByOwner } = useCars();
   const { ownerId, carId, carName } = route.params;
   const isSelf = currentUser?.id === ownerId;
+  // Final non-payment hardening -- TARGET 1: resolves the real owner via the
+  // public-safe RPC (profiles_select_own still blocks a direct lookup of
+  // anyone but yourself, unchanged).
+  const { profile: owner, isLoading: ownerLoading } = usePublicProfile(isSelf ? undefined : ownerId);
+
+  // MULTI-DEVICE MIGRATION -- see utils/hostReliability.ts's
+  // fetchHostReliability comment: this now has to go through a
+  // SECURITY DEFINER RPC instead of reading BookingsContext's own (RLS-
+  // scoped, so empty for someone else's bookings) local state. Declared
+  // before any early return below, per the Rules of Hooks -- the effect
+  // itself no-ops for the isSelf case.
+  const [reliability, setReliability] = useState<HostReliability | null>(null);
+  useEffect(() => {
+    if (isSelf || !ownerId) {
+      setReliability(null);
+      return;
+    }
+    let cancelled = false;
+    fetchHostReliability(ownerId).then((result) => {
+      if (!cancelled) setReliability(result);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isSelf, ownerId]);
 
   // Never show a broken "public profile of yourself" loop -- a renter can
   // only ever reach this screen for someone else's car, but guard it here
@@ -43,7 +71,6 @@ export const OwnerPublicProfileScreen: React.FC<Props> = ({ route, navigation })
     );
   }
 
-  const owner = getUserById(ownerId);
   const allListedCars = getCarsByOwner(ownerId);
   // Renters browsing this public profile should only ever see cars the
   // owner has made Active — an inactive car isn't bookable and shouldn't
@@ -51,6 +78,15 @@ export const OwnerPublicProfileScreen: React.FC<Props> = ({ route, navigation })
   // active-only filtering CarsContext already applies to search/listing.
   const listedCars = allListedCars.filter((c) => c.isActive !== false);
   const allCarsInactive = allListedCars.length > 0 && listedCars.length === 0;
+
+  if (ownerLoading) {
+    return (
+      <View style={{ flex: 1, backgroundColor: colors.background }}>
+        <ScreenHeader title="Owner Profile" onBack={() => navigation.goBack()} />
+        <PublicProfileSkeleton showListings />
+      </View>
+    );
+  }
 
   if (!owner) {
     return (
@@ -74,6 +110,9 @@ export const OwnerPublicProfileScreen: React.FC<Props> = ({ route, navigation })
 
   const isVerified = owner.ownerVerification?.status === 'verified';
   const isProfileComplete = getProfileCompleteness(owner).isComplete;
+  // Host reliability -- see the useEffect above (fetchHostReliability),
+  // same honest, purely-derived calculation used on CarDetailsScreen,
+  // computed server-side across ALL of this owner's real bookings.
 
   // Every conversation is tied to a specific car (existing MessagesContext
   // data model) -- use the car the person tapped through from if we have
@@ -129,6 +168,15 @@ export const OwnerPublicProfileScreen: React.FC<Props> = ({ route, navigation })
             <Rating value={aggregateRating} reviewCount={totalReviews} size={14} />
           </View>
         ) : null}
+        {/* Plain, factual line -- not a score graphic or a percentage badge.
+            Only rendered once there's enough concluded-trip history to be
+            meaningful (see getHostReliability's own threshold). */}
+        {reliability ? (
+          <View style={[styles.metaRow, { marginTop: 4 }]}>
+            <Ionicons name="checkmark-done-circle-outline" size={14} color={colors.textSecondary} />
+            <Text style={styles.metaText}>{reliability.fulfilled} of last {reliability.total} trips fulfilled</Text>
+          </View>
+        ) : null}
       </View>
 
       {allCarsInactive ? (
@@ -170,6 +218,15 @@ export const OwnerPublicProfileScreen: React.FC<Props> = ({ route, navigation })
           />
         </View>
       ) : null}
+
+      <Pressable
+        style={styles.reportRow}
+        onPress={() => navigation.navigate('Report', { targetKind: 'user', targetId: owner.id, targetLabel: owner.name })}
+        hitSlop={6}
+      >
+        <Ionicons name="flag-outline" size={15} color={colors.textTertiary} />
+        <Text style={styles.reportRowText}>Report this owner</Text>
+      </Pressable>
     </ScrollView>
   );
 };
@@ -206,4 +263,6 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
   },
   unavailableBannerText: { ...typography.bodySm, color: colors.warning, marginLeft: 8, flex: 1, lineHeight: 18 },
+  reportRow: { flexDirection: 'row', alignItems: 'center', alignSelf: 'center', marginTop: spacing.lg, paddingVertical: spacing.xs },
+  reportRowText: { ...typography.bodySm, color: colors.textTertiary, marginLeft: 6 },
 });

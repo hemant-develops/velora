@@ -8,3 +8,5 @@ android/
 ios/
 
 .idea/
+
+.env
