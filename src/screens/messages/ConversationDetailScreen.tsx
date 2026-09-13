@@ -1,12 +1,15 @@
 import React, { useEffect, useState } from 'react';
-import { Alert, FlatList, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, FlatList, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
+import { createAudioPlayer } from 'expo-audio';
 import { RootStackParamList } from '../../navigation/types';
 import { colors, radii, spacing, typography } from '../../theme';
 import { useAuth } from '../../context/AuthContext';
 import { useMessages } from '../../context/MessagesContext';
+import { useVoiceRecorder } from '../../hooks/useVoiceRecorder';
+import { supabase } from '../../lib/supabase';
 import { ScreenHeader } from '../../components/ScreenHeader';
 import { EmptyState } from '../../components/EmptyState';
 import { ChatMessage, Conversation } from '../../types';
@@ -15,10 +18,60 @@ type Props = NativeStackScreenProps<RootStackParamList, 'ConversationDetail'>;
 
 const formatTime = (iso: string) => new Date(iso).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 
+// One bubble for a recorded voice note. The chat-audio bucket is private, so
+// playback needs a fresh signed URL -- fetched lazily on first tap rather
+// than for every message up front, since most voice notes in a long thread
+// are never actually played.
+const VoiceMessageBubble: React.FC<{ path: string; mine: boolean }> = ({ path, mine }) => {
+  const [loading, setLoading] = useState(false);
+  const [playing, setPlaying] = useState(false);
+
+  const onPlay = async () => {
+    if (loading || playing) return;
+    setLoading(true);
+    try {
+      const { data, error } = await supabase.storage.from('chat-audio').createSignedUrl(path, 3600);
+      if (error || !data?.signedUrl) {
+        Alert.alert("Couldn't play voice message", 'Please check your connection and try again.');
+        return;
+      }
+      const player = createAudioPlayer(data.signedUrl);
+      setPlaying(true);
+      player.play();
+      // expo-audio doesn't expose a completion callback here without the
+      // full status-listener hook API -- clean the native player up after a
+      // generous ceiling instead of leaking it indefinitely on this screen.
+      setTimeout(() => {
+        try {
+          player.remove();
+        } catch (e) {
+          // Already released -- nothing to do.
+        }
+        setPlaying(false);
+      }, 120000);
+    } catch (err) {
+      Alert.alert("Couldn't play voice message", 'Please check your connection and try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Pressable onPress={onPlay} style={styles.voiceRow} accessibilityLabel="Play voice message">
+      {loading ? (
+        <ActivityIndicator size="small" color={mine ? colors.primary : colors.textSecondary} />
+      ) : (
+        <Ionicons name={playing ? 'volume-high' : 'play-circle'} size={22} color={mine ? colors.primary : colors.textSecondary} />
+      )}
+      <Text style={mine ? styles.bubbleTextMe : styles.bubbleTextThem}>{playing ? 'Playing…' : 'Voice message'}</Text>
+    </Pressable>
+  );
+};
+
 export const ConversationDetailScreen: React.FC<Props> = ({ route, navigation }) => {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
-  const { getConversation, sendMessage, markRead } = useMessages();
+  const { getConversation, findConversation, sendMessage, markRead } = useMessages();
   const [conversationId, setConversationId] = useState(route.params.conversationId);
   const rawConversation = conversationId ? getConversation(conversationId) : undefined;
   // Final-verification fix -- getConversation(id) resolves ANY conversation
@@ -33,6 +86,47 @@ export const ConversationDetailScreen: React.FC<Props> = ({ route, navigation })
       : undefined;
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
+  const voiceRecorder = useVoiceRecorder();
+
+  // A fresh thread (no conversationId yet) happens when either a renter
+  // taps "Message Owner" (from Car Details/an owner's profile) or an owner
+  // taps "Message Customer" (from Booking Details/a customer's profile) —
+  // the conversation isn't created until the first message is actually
+  // sent. Either way, show the OTHER party's name/avatar, not always
+  // "Owner" — a fresh thread opened by the owner needs the customer's name.
+  // Computed here (rather than after the `if (!user) return null;` below)
+  // because the chat-unification effect right after it is a hook and needs
+  // these values, and hooks can't follow a conditional return.
+  const isFreshThread = !conversationId;
+  // Every real entry point that opens a fresh (not-yet-created) thread
+  // always passes both of these — see Car Details, an owner's/customer's
+  // public profile, and Booking Details' message actions. Reading them into
+  // local consts (instead of asserting `route.params.carId!` later) means a
+  // future call site that forgets one fails safely into the empty state
+  // below rather than silently sending a message with `carId: undefined`.
+  const { carId: freshCarId, ownerId: freshOwnerId } = route.params;
+  // CHAT UNIFICATION -- there's only ever one thread per (renter, owner)
+  // pair now (see supabase_migration_multidevice.sql). So if this "fresh"
+  // thread's renter/owner pair already has a conversation going (started
+  // about a different car), jump straight into that existing thread instead
+  // of showing what looks like a blank new one that loses prior history.
+  // Mirrors the same renterId fallback onSend uses when actually sending.
+  //
+  // `findConversation` IS a real dependency, not just the values it reads --
+  // MessagesProvider hands out a new closure every time its conversations
+  // list changes (see MessagesContext's useMemo). On a cold start this
+  // screen can mount before that first fetch resolves; without
+  // `findConversation` in the deps below, the effect would run once against
+  // an still-empty list, find nothing, and never get a second chance once
+  // the real data (and a new findConversation closure) arrives a moment
+  // later -- leaving an existing thread's history hidden behind a "Say
+  // hello" empty state until the person sent a message themselves.
+  useEffect(() => {
+    if (!isFreshThread || !user || !freshOwnerId) return;
+    const renterId = route.params.renterId ?? user.id;
+    const existing = findConversation(renterId, freshOwnerId);
+    if (existing) setConversationId(existing.id);
+  }, [isFreshThread, user?.id, freshOwnerId, route.params.renterId, findConversation]);
 
   useEffect(() => {
     // Gated on the ownership-checked `conversation`, not the raw id, so a
@@ -42,20 +136,6 @@ export const ConversationDetailScreen: React.FC<Props> = ({ route, navigation })
 
   if (!user) return null;
 
-  // A fresh thread (no conversationId yet) happens when either a renter
-  // taps "Message Owner" (from Car Details/an owner's profile) or an owner
-  // taps "Message Customer" (from Booking Details/a customer's profile) —
-  // the conversation isn't created until the first message is actually
-  // sent. Either way, show the OTHER party's name/avatar, not always
-  // "Owner" — a fresh thread opened by the owner needs the customer's name.
-  const isFreshThread = !conversationId;
-  // Every real entry point that opens a fresh (not-yet-created) thread
-  // always passes both of these — see Car Details, an owner's/customer's
-  // public profile, and Booking Details' message actions. Reading them into
-  // local consts (instead of asserting `route.params.carId!` later) means a
-  // future call site that forgets one fails safely into the empty state
-  // below rather than silently sending a message with `carId: undefined`.
-  const { carId: freshCarId, ownerId: freshOwnerId } = route.params;
   const partnerName = conversation
     ? user.role === 'renter'
       ? conversation.ownerName
@@ -140,6 +220,42 @@ export const ConversationDetailScreen: React.FC<Props> = ({ route, navigation })
     }
   };
 
+  // Voice note mic button. Only available once a real conversation exists --
+  // a fresh (not-yet-created) thread has no conversationId yet to file the
+  // recording's storage path under, and starting one purely from a voice
+  // note (skipping the text-based startInfo flow above) isn't a real entry
+  // point anywhere in the app today.
+  const onMicPress = async () => {
+    if (voiceRecorder.state === 'idle') {
+      const started = await voiceRecorder.startRecording();
+      if (!started) {
+        Alert.alert('Microphone access needed', 'Allow microphone access to send a voice message.');
+      }
+      return;
+    }
+    if (voiceRecorder.state === 'recording' && conversation) {
+      const path = await voiceRecorder.stopAndUpload(conversation.id);
+      if (!path) {
+        Alert.alert("Couldn't send voice message", 'Please check your connection and try again.');
+        return;
+      }
+      try {
+        await sendMessage({
+          conversationId: conversation.id,
+          senderId: user.id,
+          senderRole: user.role,
+          text: '🎤 Voice message',
+          attachmentUrl: path,
+          attachmentType: 'audio',
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        console.log(`VELORA_SEND_VOICE_FAILED: ${message}`);
+        Alert.alert("Couldn't send voice message", 'Please check your connection and try again.');
+      }
+    }
+  };
+
   return (
     <KeyboardAvoidingView style={{ flex: 1, backgroundColor: colors.background }} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={insets.top}>
       <ScreenHeader
@@ -168,7 +284,11 @@ export const ConversationDetailScreen: React.FC<Props> = ({ route, navigation })
           return (
             <View style={[styles.bubbleRow, mine ? styles.bubbleRowMe : undefined]}>
               <View style={[styles.bubble, mine ? styles.bubbleMe : styles.bubbleThem]}>
-                <Text style={mine ? styles.bubbleTextMe : styles.bubbleTextThem}>{item.text}</Text>
+                {item.attachmentType === 'audio' && item.attachmentUrl ? (
+                  <VoiceMessageBubble path={item.attachmentUrl} mine={mine} />
+                ) : (
+                  <Text style={mine ? styles.bubbleTextMe : styles.bubbleTextThem}>{item.text}</Text>
+                )}
               </View>
               <Text style={styles.time}>{formatTime(item.createdAt)}</Text>
             </View>
@@ -180,17 +300,54 @@ export const ConversationDetailScreen: React.FC<Props> = ({ route, navigation })
       />
 
       <View style={[styles.inputRow, { paddingBottom: insets.bottom + spacing.sm }]}>
-        <TextInput
-          value={draft}
-          onChangeText={setDraft}
-          placeholder="Type a message..."
-          placeholderTextColor={colors.textTertiary}
-          style={styles.input}
-          onSubmitEditing={onSend}
-        />
-        <Pressable style={styles.sendBtn} onPress={onSend} accessibilityLabel="Send message">
-          <Ionicons name="send" size={18} color={colors.onPrimary} />
-        </Pressable>
+        {voiceRecorder.state === 'recording' ? (
+          <>
+            <View style={[styles.input, styles.recordingIndicator]}>
+              <View style={styles.recordingDot} />
+              <Text style={styles.recordingText}>Recording…</Text>
+            </View>
+            <Pressable
+              style={[styles.sendBtn, styles.cancelBtn]}
+              onPress={voiceRecorder.cancelRecording}
+              accessibilityLabel="Cancel recording"
+            >
+              <Ionicons name="close" size={18} color={colors.textSecondary} />
+            </Pressable>
+            <Pressable style={styles.sendBtn} onPress={onMicPress} accessibilityLabel="Stop and send voice message">
+              <Ionicons name="send" size={18} color={colors.onPrimary} />
+            </Pressable>
+          </>
+        ) : (
+          <>
+            <TextInput
+              value={draft}
+              onChangeText={setDraft}
+              placeholder="Type a message..."
+              placeholderTextColor={colors.textTertiary}
+              style={styles.input}
+              onSubmitEditing={onSend}
+              editable={voiceRecorder.state === 'idle'}
+            />
+            {draft.trim().length === 0 && conversation ? (
+              <Pressable
+                style={styles.sendBtn}
+                onPress={onMicPress}
+                disabled={voiceRecorder.state === 'uploading'}
+                accessibilityLabel="Record a voice message"
+              >
+                {voiceRecorder.state === 'uploading' ? (
+                  <ActivityIndicator size="small" color={colors.onPrimary} />
+                ) : (
+                  <Ionicons name="mic" size={18} color={colors.onPrimary} />
+                )}
+              </Pressable>
+            ) : (
+              <Pressable style={styles.sendBtn} onPress={onSend} accessibilityLabel="Send message">
+                <Ionicons name="send" size={18} color={colors.onPrimary} />
+              </Pressable>
+            )}
+          </>
+        )}
       </View>
     </KeyboardAvoidingView>
   );
@@ -232,4 +389,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginLeft: spacing.sm,
   },
+  cancelBtn: { backgroundColor: colors.surface },
+  recordingIndicator: { flexDirection: 'row', alignItems: 'center' },
+  recordingDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: colors.danger, marginRight: spacing.sm },
+  recordingText: { ...typography.bodyMd, color: colors.textPrimary },
+  voiceRow: { flexDirection: 'row', alignItems: 'center' },
 });

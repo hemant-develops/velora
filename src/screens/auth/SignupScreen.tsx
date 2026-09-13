@@ -25,11 +25,22 @@ export const SignupScreen: React.FC<Props> = ({ navigation }) => {
   const [role, setRole] = useState<UserRole>('renter');
   const [referralCode, setReferralCode] = useState('');
   const [error, setError] = useState<string | undefined>();
+  // PRODUCTION-AUDIT FIX -- a successful signup that needs email
+  // confirmation used to come back from AuthContext as `success: false`
+  // with an "error" that was actually good news ("Account created. Please
+  // check your email..."), which this screen then rendered in the same red
+  // error banner as a real failure -- a genuine success looking exactly
+  // like a broken signup. AuthContext now reports that case as
+  // `success: true` + `info`; this is its own piece of state so it renders
+  // in a distinct, positive banner instead of ever sharing styling with a
+  // real error.
+  const [info, setInfo] = useState<string | undefined>();
   const [referralNote, setReferralNote] = useState<string | undefined>();
   const [loading, setLoading] = useState(false);
 
   const onSignup = async () => {
     setError(undefined);
+    setInfo(undefined);
     setLoading(true);
     const result = await signup({ name, email, password, confirmPassword, role });
     // Real referral redemption -- only runs once signup actually issued a
@@ -42,7 +53,17 @@ export const SignupScreen: React.FC<Props> = ({ navigation }) => {
       if (!redeemResult.success) setReferralNote(redeemResult.error);
     }
     setLoading(false);
-    if (!result.success) setError(result.error);
+    if (!result.success) {
+      setError(result.error);
+    } else if (result.info) {
+      // Success, but no session yet (email confirmation pending) -- stay on
+      // this screen and show the positive confirmation instead of silently
+      // doing nothing, which would look like the button didn't work.
+      setInfo(result.info);
+    }
+    // A success with neither `error` nor `info` means a session WAS issued
+    // immediately -- nothing to show here, the auth-state listener already
+    // takes the person into the app.
   };
 
   return (
@@ -123,10 +144,9 @@ export const SignupScreen: React.FC<Props> = ({ navigation }) => {
           {referralNote ? <Text style={styles.referralNote}>{referralNote}</Text> : null}
 
           {error ? <Text style={styles.errorBanner}>{error}</Text> : null}
+          {info ? <Text style={styles.infoBanner}>{info}</Text> : null}
 
           <PrimaryButton label="Create Account" onPress={onSignup} loading={loading} style={{ marginTop: spacing.md }} />
-
-          <Text style={styles.demoNote}>Demo mode: no verification email is sent — you're signed in right away.</Text>
         </View>
       </ScrollView>
     </KeyboardAvoidingView>
@@ -170,6 +190,6 @@ const styles = StyleSheet.create({
   roleSubtitle: { ...typography.bodySm, color: colors.textSecondary, marginTop: 2 },
   roleSubtitleActive: { color: 'rgba(255,255,255,0.7)' },
   errorBanner: { ...typography.bodySm, color: colors.danger, marginBottom: spacing.sm },
+  infoBanner: { ...typography.bodySm, color: colors.success, marginBottom: spacing.sm },
   referralNote: { ...typography.caption, color: colors.warning, marginBottom: spacing.sm },
-  demoNote: { ...typography.caption, color: colors.textTertiary, textAlign: 'center', marginTop: spacing.lg },
 });

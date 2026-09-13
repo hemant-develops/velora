@@ -17,6 +17,7 @@ import { generateId } from '../../utils/format';
 import { detectCurrentLocationLabel, requestForegroundPermission } from '../../hooks/useDeviceLocation';
 import { getCarQuantity } from '../../utils/inventory';
 import { showToast } from '../../utils/toast';
+import { uploadCarImages } from '../../utils/uploadImage';
 import { Car, CarCategory, FuelType, RentalMode, Transmission } from '../../types';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'OwnerAddCar'>;
@@ -188,6 +189,15 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
     // already used for validation above, and `saving` always resets via
     // `finally` regardless of outcome.
     try {
+      // Upload any newly-picked local photos (file://.../content://...) to
+      // real Supabase Storage first -- an already-uploaded https URL (kept
+      // from editing an existing listing without touching its photos) is
+      // passed through untouched by uploadCarImages. Without this, the
+      // listing would save the on-device-only URI directly and every other
+      // device (or this one, after a cache clear) would show no photo at
+      // all -- see uploadImage.ts's top comment.
+      const uploadedImages = await uploadCarImages(images, user.id);
+
       if (isEditMode && existingCar) {
         // Preserve fields that aren't editable here (id, ownerId) and the
         // car's real, earned rating/reviewCount — editing a listing never
@@ -197,7 +207,7 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
           brandId,
           year: yearNum,
           category,
-          images,
+          images: uploadedImages,
           pricePerDay: price,
           driverPricePerDay: driverPrice,
           topSpeed: speed,
@@ -218,7 +228,7 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
           brandId,
           year: yearNum,
           category,
-          images,
+          images: uploadedImages,
           pricePerDay: price,
           driverPricePerDay: driverPrice,
           rating: 0,
@@ -253,7 +263,24 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
       console.log(`VELORA_OWNER_CAR_SAVE_FAILED: ${message}`);
-      setError(isEditMode ? "We couldn't save your changes right now. Please try again." : "We couldn't publish this listing right now. Please try again.");
+      // PRODUCTION-AUDIT FIX -- was always the same generic sentence
+      // regardless of cause, which is fine as a default but actively
+      // unhelpful for the two cases that are both common AND something the
+      // owner can actually act on: no internet (retry once connected) and a
+      // photo upload that failed mid-save (the exact failure a background/
+      // foreground trip to Camera or Gallery can trigger). Falls back to the
+      // original generic copy for everything else, matching prior behavior.
+      const isNetworkError = /network request failed|fetch failed|network error/i.test(message);
+      const isImageUploadError = /couldn't upload image/i.test(message);
+      setError(
+        isNetworkError
+          ? "You're offline. Check your connection and try again."
+          : isImageUploadError
+            ? "One of your photos couldn't be uploaded. Check your connection and try again."
+            : isEditMode
+              ? "We couldn't save your changes right now. Please try again."
+              : "We couldn't publish this listing right now. Please try again.",
+      );
     } finally {
       setSaving(false);
     }

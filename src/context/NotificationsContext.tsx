@@ -1,7 +1,9 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import { Alert } from 'react-native';
 import { AppNotification, NotificationTargetKind } from '../types';
 import { generateId } from '../utils/format';
 import { supabase } from '../lib/supabase';
+import { navigateToNotificationTarget } from '../navigation/navigationRef';
 
 // MULTI-DEVICE MIGRATION -- notifications used to live only in this
 // device's AsyncStorage (`velora.notifications.v1`), so an owner's phone
@@ -78,10 +80,37 @@ export const NotificationsProvider: React.FC<{ children: React.ReactNode }> = ({
       fetchNotifications();
     });
     // Live updates -- a new notification (booking request, status change,
-    // message) appears immediately without reopening the app.
+    // message) appears immediately without reopening the app. INSERT is
+    // handled separately from UPDATE/DELETE (below) so a genuinely new
+    // notification -- one this device didn't just create itself via its own
+    // notify() call -- can also pop up an in-app alert (see below), which a
+    // blind fetchNotifications() on every event type couldn't distinguish.
     const channel = supabase
       .channel('notifications_changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications' }, () => {
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications' }, (payload) => {
+        const row = payload.new as NotificationRow;
+        const incoming = rowToNotification(row);
+        setNotifications((prev) => {
+          if (prev.some((n) => n.id === incoming.id)) return prev; // this device's own optimistic insert
+          // A real event from elsewhere (the other party's device) that this
+          // user hasn't seen yet -- surface it right now instead of making
+          // them find it themselves in the Notifications list. Mirrors
+          // NotificationsScreen.onPressItem's own "View" routing exactly.
+          Alert.alert(incoming.title, incoming.message, [
+            { text: 'Dismiss', style: 'cancel' },
+            {
+              text: 'View',
+              onPress: () => {
+                markRead(incoming.id);
+                navigateToNotificationTarget(incoming.target ?? null);
+              },
+            },
+          ]);
+          return [incoming, ...prev];
+        });
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications' }, (payload) => {
+        if (payload.eventType === 'INSERT') return; // handled above
         fetchNotifications();
       })
       .subscribe();

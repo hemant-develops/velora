@@ -114,6 +114,18 @@ const rowToCar = (row: CarRow): Car => ({
   createdAt: row.created_at,
 });
 
+// PRODUCTION-AUDIT FIX -- every one of these columns is a Postgres `integer`
+// (see supabase_migration_multidevice.sql's car_listings table). OwnerAddCar
+// Screen's numeric text inputs use a numeric keyboard, but that keyboard
+// still allows a decimal point on Android/iOS, and `Number("180.5")` passes
+// straight through as 180.5 with nothing else in this codebase catching it.
+// Sending a fractional value into an `integer` column is rejected by
+// Postgres, and that rejection surfaced through onSubmit's catch block as
+// the same generic "we couldn't save your changes right now" -- indistin-
+// guishable from a real network/auth failure with no way to tell them
+// apart. Rounding here, at the single choke point every save/create goes
+// through, removes that failure mode for every caller, not just this
+// screen's current inputs.
 const carToRow = (car: Car) => ({
   id: car.id,
   owner_id: car.ownerId,
@@ -121,23 +133,23 @@ const carToRow = (car: Car) => ({
   brand_id: car.brandId,
   category: car.category,
   images: car.images,
-  price_per_day: car.pricePerDay,
-  driver_price_per_day: car.driverPricePerDay,
+  price_per_day: Math.round(car.pricePerDay),
+  driver_price_per_day: Math.round(car.driverPricePerDay),
   rating: car.rating,
   review_count: car.reviewCount,
-  top_speed: car.topSpeed,
+  top_speed: Math.round(car.topSpeed),
   transmission: car.transmission,
   fuel_type: car.fuelType,
   fuel_economy: car.fuelEconomy,
-  seats: car.seats,
+  seats: Math.round(car.seats),
   features: car.features,
   description: car.description,
-  discount_percent: car.discountPercent ?? null,
+  discount_percent: car.discountPercent != null ? Math.round(car.discountPercent) : null,
   location: car.location,
   rental_modes: car.rentalModes,
-  year: car.year ?? null,
+  year: car.year != null ? Math.round(car.year) : null,
   is_active: car.isActive !== false,
-  quantity: getCarQuantity(car),
+  quantity: Math.round(getCarQuantity(car)),
 });
 
 export const CarsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -234,7 +246,13 @@ export const CarsProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const updateOwnerCar = async (carId: string, patch: Partial<Car>) => {
     const current = allCars.find((c) => c.id === carId);
-    if (!current) return;
+    // PRODUCTION-AUDIT FIX -- this used to silently `return` here, which let
+    // OwnerAddCarScreen's onSubmit fall through to "Changes saved" / navigate
+    // back as if the update had actually happened, when nothing was ever
+    // sent to Supabase. Throwing surfaces it as a real, visible failure
+    // instead of a false success the owner would only discover later by
+    // finding their edit never took effect.
+    if (!current) throw new Error("This car couldn't be found. Pull to refresh and try again.");
     const updated: Car = { ...current, ...patch };
     const { error } = await supabase.from('car_listings').update(carToRow(updated)).eq('id', carId);
     if (error) {

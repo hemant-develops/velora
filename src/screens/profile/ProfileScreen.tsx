@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -16,6 +16,7 @@ import { formatCurrency, formatDate } from '../../utils/format';
 import { getProfileCompleteness } from '../../utils/profile';
 import { SUPPORT_EMAIL } from '../../utils/policy';
 import { useAppNavigation, useTabBarClearance } from '../../navigation/hooks';
+import { checkForAppUpdateManually } from '../../hooks/useAppUpdatePrompt';
 
 export const ProfileScreen: React.FC = () => {
   const insets = useSafeAreaInsets();
@@ -26,8 +27,35 @@ export const ProfileScreen: React.FC = () => {
   const { getUnreadCountForUser } = useNotifications();
   const { getBalance } = useRewards();
   const navigation = useAppNavigation();
+  // Manual counterpart to useAppUpdatePrompt's automatic on-open check --
+  // requested so a person can trigger the OTA update check on demand (e.g.
+  // right after being told a new version was published) instead of only
+  // ever getting checked once, silently, at cold start. Runs the same
+  // checkForUpdateAsync() call; if it finds something, UpdateBanner
+  // (mounted once at the app root) shows the actual download/restart flow
+  // on its own -- this handler only needs to speak up for the two outcomes
+  // the banner never covers: "you're already up to date" and "the check
+  // itself failed" -- so a tap never looks like it did nothing.
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
 
   if (!user) return null;
+
+  const onCheckForUpdates = async () => {
+    if (checkingUpdate) return;
+    setCheckingUpdate(true);
+    try {
+      const result = await checkForAppUpdateManually();
+      if (!result.ok) {
+        Alert.alert("Couldn't check for updates", result.message ?? 'Please try again.');
+      } else if (!result.available) {
+        Alert.alert("You're up to date", 'VELORA is already on the latest version.');
+      }
+      // If an update was found, UpdateBanner reacts to it on its own --
+      // nothing else to do here.
+    } finally {
+      setCheckingUpdate(false);
+    }
+  };
 
   const walletBalance = getBalance(user.id);
   const isOwner = user.role === 'owner';
@@ -296,6 +324,12 @@ export const ProfileScreen: React.FC = () => {
         <ProfileMenuItem icon="shield-checkmark-outline" label="Privacy" onPress={() => navigation.navigate('Legal', { kind: 'privacy' })} />
         <ProfileMenuItem icon="document-text-outline" label="Terms & Conditions" onPress={() => navigation.navigate('Legal', { kind: 'terms' })} />
         <ProfileMenuItem icon="help-circle-outline" label="Help & Support" onPress={() => navigation.navigate('HelpSupport')} />
+        <ProfileMenuItem
+          icon="cloud-download-outline"
+          label="Check for Updates"
+          subtitle={checkingUpdate ? 'Checking…' : undefined}
+          onPress={onCheckForUpdates}
+        />
         <ProfileMenuItem icon="log-out-outline" label="Logout" onPress={onLogout} destructive />
         <ProfileMenuItem icon="trash-outline" label="Delete Account" onPress={onDeleteAccount} destructive />
       </View>

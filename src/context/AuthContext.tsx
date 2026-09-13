@@ -89,7 +89,7 @@ interface AuthContextValue {
     role: UserRole;
   }) => Promise<AuthResult>;
   logout: () => Promise<void>;
-  updateProfile: (patch: Partial<AppUser>) => Promise<void>;
+  updateProfile: (patch: Partial<AppUser>) => Promise<boolean>;
   switchRole: (role: UserRole) => Promise<AuthResult>;
   // FLAGGED MINIMAL ADDITION: a real "Forgot Password" call, replacing what
   // was previously a fully local mock that always claimed success without
@@ -450,9 +450,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
     if (!data.session) {
       // Email confirmation is required by the Supabase project settings --
-      // no session is issued until the user confirms. Building a
-      // confirmation-pending UI is out of scope for this step.
-      return { success: false, error: 'Account created. Please check your email to confirm it, then log in.' };
+      // no session is issued until the user confirms.
+      //
+      // PRODUCTION-AUDIT FIX -- the account WAS genuinely created; this used
+      // to come back as `success: false` with this same sentence as the
+      // `error`, which SignupScreen renders in its red error banner. A real
+      // success rendered as a failure is exactly the "success looks like an
+      // error" bug reported against this screen -- the only thing left to
+      // do is tell the person to go check their email, not report a
+      // failure. `success: true` + `info` is the same pattern this file
+      // already uses elsewhere (see switchRole) for "succeeded, here's a
+      // heads-up" -- SignupScreen shows `info` in a neutral/positive banner
+      // instead of the error one.
+      return { success: true, info: 'Account created! Check your email to confirm it, then log in.' };
     }
 
     if (role === 'owner') {
@@ -472,12 +482,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const logout = async () => {
+    // AUDIT FIX -- registerForPushNotifications saves this device's Expo
+    // push token keyed by user_id (see push_tokens), but nothing ever
+    // cleared it on logout. Left as-is, a signed-out device kept receiving
+    // that account's real push notifications indefinitely (bookings,
+    // messages -- anything notify() fires) and, if tapped, tried to deep
+    // link into an authenticated-only screen the (now logged-out) app
+    // isn't even rendering. Blanking the token here -- using the update
+    // grant push_tokens already has, no RLS/schema change needed -- makes
+    // the send-push Edge Function's own `if (!tokenRow?.token) skip` treat
+    // this device as unregistered until the next login re-saves a real
+    // token. Must run BEFORE signOut() -- auth.uid() (which the RLS check
+    // relies on) stops resolving to this user the moment the session ends.
+    if (user) {
+      const { error } = await supabase.from('push_tokens').update({ token: '' }).eq('user_id', user.id);
+      if (error) console.log(`VELORA_PUSH_TOKEN_CLEAR_ERROR: ${error.message}`);
+    }
     await supabase.auth.signOut();
     // onAuthStateChange (SIGNED_OUT) clears `user` state.
   };
 
-  const updateProfile = async (patch: Partial<AppUser>) => {
-    if (!user) return;
+  const updateProfile = async (patch: Partial<AppUser>): Promise<boolean> => {
+    if (!user) return false;
     const nextUser = { ...user, ...patch };
     setUser(nextUser);
     profileCacheRef.current.set(nextUser.id, nextUser);
@@ -508,8 +534,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const { error } = await supabase.from('profiles').update(dbPatch).eq('id', user.id);
       if (error) {
         console.log(`VELORA_AUTH_PROFILE_UPDATE_ERROR: ${error.message}`);
+        // Silent-success fix -- this used to only log and return, so a
+        // failed name/avatar write (e.g. a network hiccup) still left the
+        // local optimistic `setUser` above in place, making EditProfileScreen
+        // show "Profile updated" even though nothing persisted and every
+        // OTHER device would never see the change. Reporting false lets the
+        // caller tell the person honestly instead.
+        return false;
       }
     }
+    return true;
   };
 
   // Renter -> Owner requires prior verification; Owner -> Renter is always allowed.

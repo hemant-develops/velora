@@ -33,13 +33,21 @@ export interface SendMessageInput {
   senderId: string;
   senderRole: UserRole;
   text: string;
+  // Set together when sending a recorded voice note (see
+  // ConversationDetailScreen's mic button / useVoiceRecorder). `text` should
+  // still be a short human label ("🎤 Voice message") in that case, not
+  // empty, so every existing preview/notification path keeps working as-is.
+  attachmentUrl?: string;
+  attachmentType?: 'audio';
 }
 
 interface MessagesContextValue {
   isLoaded: boolean;
   getConversation: (id: string) => Conversation | undefined;
   getConversationsForUser: (userId: string, role: UserRole) => Conversation[];
-  findConversation: (carId: string, renterId: string, ownerId: string) => Conversation | undefined;
+  // One thread per (renter, owner) pair, regardless of which car it started
+  // about -- see the "CHAT UNIFICATION" note in supabase_migration_multidevice.sql.
+  findConversation: (renterId: string, ownerId: string) => Conversation | undefined;
   sendMessage: (input: SendMessageInput) => Promise<Conversation>;
   markRead: (conversationId: string, role: UserRole) => void;
   getUnreadCountForUser: (userId: string, role: UserRole) => number;
@@ -71,6 +79,8 @@ interface ChatMessageRow {
   sender_id: string;
   text: string;
   created_at: string;
+  attachment_url: string | null;
+  attachment_type: string | null;
 }
 
 const rowToConversation = (row: ConversationRow, messages: ChatMessage[]): Conversation => ({
@@ -125,7 +135,14 @@ export const MessagesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       const grouped: Record<string, ChatMessage[]> = {};
       for (const row of (msgRes.data ?? []) as ChatMessageRow[]) {
         const list = grouped[row.conversation_id] ?? (grouped[row.conversation_id] = []);
-        list.push({ id: row.id, senderId: row.sender_id, text: row.text, createdAt: row.created_at });
+        list.push({
+          id: row.id,
+          senderId: row.sender_id,
+          text: row.text,
+          createdAt: row.created_at,
+          attachmentUrl: row.attachment_url ?? undefined,
+          attachmentType: row.attachment_type === 'audio' ? 'audio' : undefined,
+        });
       }
 
       setConversationRows((convRes.data ?? []) as ConversationRow[]);
@@ -161,22 +178,38 @@ export const MessagesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     [conversationRows, messagesByConv],
   );
 
-  const findConversation = (carId: string, renterId: string, ownerId: string) =>
-    conversations.find((c) => c.carId === carId && c.renterId === renterId && c.ownerId === ownerId);
+  const findConversation = (renterId: string, ownerId: string) =>
+    conversations.find((c) => c.renterId === renterId && c.ownerId === ownerId);
 
   // A conversation only becomes real -- persisted, and visible to the owner --
   // once the first message is actually sent. Until then it's just context
   // (startInfo) passed along from "Message Owner" on Car Details.
-  const sendMessage = async ({ conversationId, startInfo, senderId, senderRole, text }: SendMessageInput): Promise<Conversation> => {
+  const sendMessage = async ({
+    conversationId,
+    startInfo,
+    senderId,
+    senderRole,
+    text,
+    attachmentUrl,
+    attachmentType,
+  }: SendMessageInput): Promise<Conversation> => {
     const trimmed = text.trim();
     const now = new Date().toISOString();
     const messageId = generateId('msg');
 
     let convRow = conversationId ? conversationRows.find((c) => c.id === conversationId) : undefined;
+    // One thread per (renter, owner) pair regardless of car -- see the "CHAT
+    // UNIFICATION" note in supabase_migration_multidevice.sql. This is only
+    // reached when the caller started from "fresh" context (no existing
+    // conversationId, e.g. tapping "Message Owner" from a car's details),
+    // so if the renter/owner pair already has a thread going, we reuse it
+    // instead of creating a second, seemingly-empty one.
+    let reusedExistingForNewCar = false;
     if (!convRow && startInfo) {
       convRow = conversationRows.find(
-        (c) => c.car_id === startInfo.carId && c.renter_id === startInfo.renterId && c.owner_id === startInfo.ownerId,
+        (c) => c.renter_id === startInfo.renterId && c.owner_id === startInfo.ownerId,
       );
+      if (convRow && convRow.car_id !== startInfo.carId) reusedExistingForNewCar = true;
     }
 
     if (!convRow) {
@@ -196,16 +229,42 @@ export const MessagesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         owner_avatar: startInfo.ownerAvatar,
       });
       if (convError) {
-        // 23505 = unique (car_id, renter_id, owner_id) violation -- another
-        // send (a double-tap, or the same thread started from two devices)
-        // created this exact conversation a moment earlier. Refetch and
-        // fall through to the "existing conversation" path below instead of
-        // surfacing a confusing error for what is really just a race.
+        // 23505 = unique (renter_id, owner_id) violation -- another send (a
+        // double-tap, or the same thread started from two devices at once)
+        // created this exact conversation a moment earlier. Fall through to
+        // the "existing conversation" path below instead of surfacing a
+        // confusing error for what is really just a race.
+        //
+        // PRODUCTION-AUDIT FIX -- this used to call `await fetchAll()` and
+        // then read `conversationRows` right after, but `conversationRows`
+        // here is a plain variable captured by this closure at the render
+        // that created `sendMessage`; `fetchAll()`'s `setConversationRows`
+        // schedules a state update, it does not mutate that captured
+        // variable. So this lookup was reading the SAME stale (pre-race)
+        // array every time, essentially never finding the conversation the
+        // other concurrent request had just created, and the exact
+        // concurrent-send race this code exists to handle fell through to
+        // "We couldn't start this conversation right now" instead of
+        // recovering. A direct, targeted query for that one row (rather than
+        // depending on React state timing) fixes it, and also seeds the
+        // local cache so any other concurrent caller in this same session
+        // sees it immediately too.
         if (convError.code === '23505') {
-          await fetchAll();
-          convRow = conversationRows.find(
-            (c) => c.car_id === startInfo.carId && c.renter_id === startInfo.renterId && c.owner_id === startInfo.ownerId,
-          );
+          const { data: existingRow, error: raceFetchError } = await supabase
+            .from('conversations')
+            .select('*')
+            .eq('renter_id', startInfo.renterId)
+            .eq('owner_id', startInfo.ownerId)
+            .maybeSingle();
+          if (raceFetchError) {
+            console.log(`VELORA_CONVERSATIONS_RACE_REFETCH_ERROR: ${raceFetchError.message}`);
+          }
+          if (existingRow) {
+            convRow = existingRow as ConversationRow;
+            if (convRow.car_id !== startInfo.carId) reusedExistingForNewCar = true;
+            const resolvedRow = convRow;
+            setConversationRows((prev) => (prev.some((c) => c.id === resolvedRow.id) ? prev : [resolvedRow, ...prev]));
+          }
         }
         if (!convRow) {
           throw new Error("We couldn't start this conversation right now. Please try again.");
@@ -230,17 +289,36 @@ export const MessagesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
     }
 
+    // Existing thread reused for a different car than it started with --
+    // point car_id/car_name at the newest topic so "which car is this about"
+    // stays meaningful, without losing any prior message history.
+    if (reusedExistingForNewCar && startInfo) {
+      convRow = { ...convRow, car_id: startInfo.carId, car_name: startInfo.carName };
+      supabase
+        .from('conversations')
+        .update({ car_id: startInfo.carId, car_name: startInfo.carName })
+        .eq('id', convRow.id)
+        .then(({ error }) => {
+          if (error) console.log(`VELORA_CONVERSATIONS_UPDATE_CAR_ERROR: ${error.message}`);
+        });
+    }
+
     const finalConvRow = convRow;
 
-    const { error: msgError } = await supabase
-      .from('chat_messages')
-      .insert({ id: messageId, conversation_id: finalConvRow.id, sender_id: senderId, text: trimmed });
+    const { error: msgError } = await supabase.from('chat_messages').insert({
+      id: messageId,
+      conversation_id: finalConvRow.id,
+      sender_id: senderId,
+      text: trimmed,
+      attachment_url: attachmentUrl ?? null,
+      attachment_type: attachmentType ?? null,
+    });
     if (msgError) {
       console.log(`VELORA_CHAT_MESSAGES_INSERT_ERROR: ${msgError.message}`);
       throw new Error("We couldn't send that message right now. Please try again.");
     }
 
-    const message: ChatMessage = { id: messageId, senderId, text: trimmed, createdAt: now };
+    const message: ChatMessage = { id: messageId, senderId, text: trimmed, createdAt: now, attachmentUrl, attachmentType };
 
     // Predict the same update the velora_bump_conversation_on_message
     // trigger applies server-side, so the caller (and this device's own

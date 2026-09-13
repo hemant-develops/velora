@@ -408,6 +408,85 @@ create table if not exists public.chat_messages (
   created_at       timestamptz not null default now()
 );
 
+-- Voice notes (mic permission feature) -- added via ALTER since the table
+-- above may already exist from an earlier run of this file; `if not exists`
+-- on a column makes this safe to re-run too.
+alter table public.chat_messages add column if not exists attachment_url text;
+alter table public.chat_messages add column if not exists attachment_type text;
+
+-- CHAT UNIFICATION (2026-09) -- originally one thread per (renter, owner,
+-- car), by design ("no generic support inbox"). Real usage showed a renter
+-- messaging the same owner about a second car opened a brand-new, seemingly
+-- empty thread instead of continuing the existing conversation -- confusing,
+-- since to a person it's just "my chat with this owner". Consolidate any
+-- existing per-car duplicates into a single thread per (renter, owner) pair,
+-- then swap the unique constraint so this can never happen again. Safe to
+-- re-run: no-ops once already consolidated. Deliberately placed here, AFTER
+-- both public.conversations and public.chat_messages (plus its
+-- attachment_url/attachment_type columns) already exist above -- it
+-- reassigns chat_messages.conversation_id while merging duplicates, so it
+-- must run once both tables/columns are guaranteed to be in place, not
+-- while conversations still exists alone.
+do $$
+declare
+  keep record;
+  dup record;
+begin
+  -- Only bother if the old per-car constraint is still the one in force.
+  if exists (
+    select 1 from pg_constraint
+    where conrelid = 'public.conversations'::regclass
+      and pg_get_constraintdef(oid) = 'UNIQUE (car_id, renter_id, owner_id)'
+  ) then
+    for keep in
+      select distinct on (renter_id, owner_id) id, renter_id, owner_id
+      from public.conversations
+      order by renter_id, owner_id, last_message_at desc
+    loop
+      for dup in
+        select id from public.conversations
+        where renter_id = keep.renter_id and owner_id = keep.owner_id and id <> keep.id
+      loop
+        update public.chat_messages set conversation_id = keep.id where conversation_id = dup.id;
+        delete from public.conversations where id = dup.id;
+      end loop;
+
+      update public.conversations c
+      set last_message = m.text,
+          last_message_at = m.created_at
+      from (
+        select text, created_at from public.chat_messages
+        where conversation_id = keep.id
+        order by created_at desc
+        limit 1
+      ) m
+      where c.id = keep.id;
+    end loop;
+  end if;
+end $$;
+
+do $$
+declare
+  old_constraint_name text;
+begin
+  select conname into old_constraint_name
+  from pg_constraint
+  where conrelid = 'public.conversations'::regclass
+    and pg_get_constraintdef(oid) = 'UNIQUE (car_id, renter_id, owner_id)';
+
+  if old_constraint_name is not null then
+    execute format('alter table public.conversations drop constraint %I', old_constraint_name);
+  end if;
+
+  if not exists (
+    select 1 from pg_constraint
+    where conrelid = 'public.conversations'::regclass
+      and pg_get_constraintdef(oid) = 'UNIQUE (renter_id, owner_id)'
+  ) then
+    alter table public.conversations add constraint conversations_renter_owner_key unique (renter_id, owner_id);
+  end if;
+end $$;
+
 alter table public.chat_messages enable row level security;
 
 grant select, insert on public.chat_messages to authenticated;
@@ -835,6 +914,105 @@ create policy push_tokens_update on public.push_tokens
   for update to authenticated
   using (user_id = auth.uid())
   with check (user_id = auth.uid());
+
+-- =============================================================================
+-- 9c. Voice notes storage -- this is what makes the microphone permission
+--     (src/hooks/useVoiceRecorder.ts, the mic button in ConversationDetail)
+--     a REAL feature rather than a bare permission prompt: recorded audio is
+--     uploaded here, and chat_messages.attachment_url points at it.
+--     Uploads are stored at "<conversationId>/<file>.m4a" -- both policies
+--     below check the requester is one of that conversation's two
+--     participants (renter or owner) before allowing the read/write, the
+--     same access rule already enforced on chat_messages itself. The bucket
+--     is private (public = false): every read goes through Supabase's
+--     signed/authenticated URL flow, never a bare public URL.
+-- =============================================================================
+insert into storage.buckets (id, name, public)
+values ('chat-audio', 'chat-audio', false)
+on conflict (id) do nothing;
+
+drop policy if exists chat_audio_insert on storage.objects;
+create policy chat_audio_insert on storage.objects
+  for insert to authenticated
+  with check (
+    bucket_id = 'chat-audio'
+    and exists (
+      select 1 from public.conversations c
+      where c.id = (storage.foldername(name))[1]
+        and (c.renter_id = auth.uid() or c.owner_id = auth.uid())
+    )
+  );
+
+drop policy if exists chat_audio_select on storage.objects;
+create policy chat_audio_select on storage.objects
+  for select to authenticated
+  using (
+    bucket_id = 'chat-audio'
+    and exists (
+      select 1 from public.conversations c
+      where c.id = (storage.foldername(name))[1]
+        and (c.renter_id = auth.uid() or c.owner_id = auth.uid())
+    )
+  );
+
+-- =============================================================================
+-- 9d. Car photo & profile avatar storage -- this is what was actually
+--     missing from the multi-device migration for images specifically: car
+--     listings and user profiles were already reading/writing real rows in
+--     Supabase, but OwnerAddCarScreen/EditProfileScreen were still saving
+--     the raw on-DEVICE picker URI (file://... or content://...) straight
+--     into car_listings.images / the user's avatar -- meaningless the
+--     moment anyone but that exact device (owner's phone, that install)
+--     tries to load it, which is exactly the "photo not showing" /
+--     "no real image" symptom. src/utils/uploadImage.ts now uploads the
+--     actual bytes here first and stores the resulting public URL instead.
+--     Both buckets are public-READ (car photos and profile pictures are
+--     shown throughout the app to any signed-in user browsing the
+--     marketplace, same as a real listing site) but write-restricted to the
+--     owning user's own folder.
+-- =============================================================================
+insert into storage.buckets (id, name, public)
+values ('car-photos', 'car-photos', true)
+on conflict (id) do nothing;
+
+insert into storage.buckets (id, name, public)
+values ('avatars', 'avatars', true)
+on conflict (id) do nothing;
+
+drop policy if exists car_photos_insert on storage.objects;
+create policy car_photos_insert on storage.objects
+  for insert to authenticated
+  with check (bucket_id = 'car-photos' and (storage.foldername(name))[1] = auth.uid()::text);
+
+drop policy if exists car_photos_update on storage.objects;
+create policy car_photos_update on storage.objects
+  for update to authenticated
+  using (bucket_id = 'car-photos' and (storage.foldername(name))[1] = auth.uid()::text);
+
+drop policy if exists car_photos_delete on storage.objects;
+create policy car_photos_delete on storage.objects
+  for delete to authenticated
+  using (bucket_id = 'car-photos' and (storage.foldername(name))[1] = auth.uid()::text);
+
+drop policy if exists car_photos_select on storage.objects;
+create policy car_photos_select on storage.objects
+  for select to public
+  using (bucket_id = 'car-photos');
+
+drop policy if exists avatars_insert on storage.objects;
+create policy avatars_insert on storage.objects
+  for insert to authenticated
+  with check (bucket_id = 'avatars' and (storage.foldername(name))[1] = auth.uid()::text);
+
+drop policy if exists avatars_update on storage.objects;
+create policy avatars_update on storage.objects
+  for update to authenticated
+  using (bucket_id = 'avatars' and (storage.foldername(name))[1] = auth.uid()::text);
+
+drop policy if exists avatars_select on storage.objects;
+create policy avatars_select on storage.objects
+  for select to public
+  using (bucket_id = 'avatars');
 
 -- =============================================================================
 -- 10. Realtime -- so a change made on ONE device (a new car listing, a

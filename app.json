@@ -8,7 +8,6 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "backgroundColor": "#FFFFFF",
-    "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.velora.rental",
@@ -57,13 +56,26 @@
           "color": "#F4C728"
         }
       ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "VELORA needs access to your microphone so you can send a voice message in chat."
+        }
+      ],
       "expo-font",
-      "expo-asset"
+      "expo-asset",
+      "expo-updates"
     ],
     "extra": {
       "eas": {
         "projectId": "36c9d1ca-21e3-4de2-9607-7bbd495ae5c0"
       }
+    },
+    "runtimeVersion": {
+      "policy": "fingerprint"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/36c9d1ca-21e3-4de2-9607-7bbd495ae5c0"
     }
   }
 }

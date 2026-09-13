@@ -12,6 +12,7 @@ import { useAuth } from '../../context/AuthContext';
 import { isValidIndianPhone } from '../../utils/format';
 import { getProfileCompleteness } from '../../utils/profile';
 import { showToast } from '../../utils/toast';
+import { uploadAvatar } from '../../utils/uploadImage';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'EditProfile'>;
 
@@ -21,10 +22,11 @@ export const EditProfileScreen: React.FC<Props> = ({ navigation }) => {
   const [phone, setPhone] = useState(user?.phone ?? '');
   const [location, setLocation] = useState(user?.location ?? '');
   const [bio, setBio] = useState(user?.bio ?? '');
-  // Local preview only until Save — reusing the same picker/persistence
-  // pattern already proven in OwnerAddCarScreen (local image URI, no remote
-  // upload service). Nothing is written to the account until onSave calls
-  // updateProfile.
+  // Local preview only until Save -- the on-device picker URI is shown
+  // immediately here, but onSave uploads the real bytes to Supabase Storage
+  // (see uploadImage.ts) before it ever reaches updateProfile, so what gets
+  // saved is always a real, permanent URL every device can load -- not the
+  // local-only URI itself.
   const [avatarUri, setAvatarUri] = useState(user?.avatar ?? '');
   const [saving, setSaving] = useState(false);
 
@@ -71,23 +73,43 @@ export const EditProfileScreen: React.FC<Props> = ({ navigation }) => {
     if (!isValid) return;
 
     setSaving(true);
-    // Only ever writes trimmed, already-validated values — never falls back
-    // to silently keeping the old value when what's on screen is invalid,
-    // since onSave already bails out above in that case.
-    await updateProfile({
-      name: name.trim(),
-      phone: phone.trim(),
-      location: location.trim() || user.location,
-      avatar: avatarUri || user.avatar,
-      ...(user.role === 'owner' ? { bio: bio.trim() } : null),
-    });
-    setSaving(false);
-    // B3 -- same silent-success gap as OwnerAddCarScreen's Save/Publish:
-    // reuses the existing non-blocking showToast (already proven on the
-    // owner dashboard's Active/Inactive toggle) instead of leaving the save
-    // unconfirmed.
-    showToast('Profile updated');
-    navigation.goBack();
+    try {
+      // Upload a newly-picked local photo to real Supabase Storage first --
+      // an unchanged avatarUri that's already a real URL (didn't touch the
+      // photo this edit) passes through untouched. Without this the account
+      // would save the on-device-only picker URI directly, which is exactly
+      // why profile photos weren't showing up on other devices.
+      const uploadedAvatar = avatarUri ? await uploadAvatar(avatarUri, user.id) : user.avatar;
+
+      // Only ever writes trimmed, already-validated values — never falls
+      // back to silently keeping the old value when what's on screen is
+      // invalid, since onSave already bails out above in that case.
+      const ok = await updateProfile({
+        name: name.trim(),
+        phone: phone.trim(),
+        location: location.trim() || user.location,
+        avatar: uploadedAvatar,
+        ...(user.role === 'owner' ? { bio: bio.trim() } : null),
+      });
+
+      if (!ok) {
+        Alert.alert("Couldn't save changes", 'Please check your connection and try again.');
+        return;
+      }
+
+      // B3 -- same silent-success gap as OwnerAddCarScreen's Save/Publish:
+      // reuses the existing non-blocking showToast (already proven on the
+      // owner dashboard's Active/Inactive toggle) instead of leaving the
+      // save unconfirmed.
+      showToast('Profile updated');
+      navigation.goBack();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      console.log(`VELORA_PROFILE_SAVE_FAILED: ${message}`);
+      Alert.alert("Couldn't save changes", 'Please check your connection and try again.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
