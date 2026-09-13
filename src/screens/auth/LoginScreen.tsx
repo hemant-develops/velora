@@ -18,19 +18,26 @@ import { heroImages } from '../../data/images';
 import { InputField } from '../../components/InputField';
 import { PrimaryButton } from '../../components/PrimaryButton';
 import { useAuth } from '../../context/AuthContext';
+import { EmailVerificationModal } from '../../components/EmailVerificationModal';
 import { UserRole } from '../../types';
 
 type Props = NativeStackScreenProps<AuthStackParamList, 'Login'>;
 
 export const LoginScreen: React.FC<Props> = ({ navigation }) => {
   const insets = useSafeAreaInsets();
-  const { login } = useAuth();
+  const { login, resendVerificationEmail } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [role, setRole] = useState<UserRole>('renter');
   const [error, setError] = useState<string | undefined>();
   const [info, setInfo] = useState<string | undefined>();
   const [loading, setLoading] = useState(false);
+  // PRODUCT IMPROVEMENT -- Supabase's own login error for this exact account
+  // state is literally "Email not confirmed", which used to just render as a
+  // raw red error banner -- accurate, but a dead end with no way forward.
+  // Routes to the same EmailVerificationModal used at signup instead, so
+  // this is a recoverable moment (open mail / resend) rather than a wall.
+  const [showVerificationModal, setShowVerificationModal] = useState(false);
 
   const onLogin = async () => {
     setError(undefined);
@@ -38,8 +45,15 @@ export const LoginScreen: React.FC<Props> = ({ navigation }) => {
     setLoading(true);
     const result = await login(email, password, role);
     setLoading(false);
-    if (!result.success) setError(result.error);
-    else if (result.info) setInfo(result.info);
+    if (!result.success) {
+      if (result.error && /email not confirmed/i.test(result.error)) {
+        setShowVerificationModal(true);
+      } else {
+        setError(result.error);
+      }
+    } else if (result.info) {
+      setInfo(result.info);
+    }
   };
 
   return (
@@ -120,10 +134,15 @@ export const LoginScreen: React.FC<Props> = ({ navigation }) => {
               gateway and government KYC. A button that quietly logged in
               with blank credentials (the previous behavior here) was worse
               than not having it, so it's left out rather than faked. */}
-
-          <Text style={styles.demoNote}>Use the email and password you signed up with.</Text>
         </View>
       </ScrollView>
+
+      <EmailVerificationModal
+        visible={showVerificationModal}
+        email={email.trim()}
+        onResend={resendVerificationEmail}
+        onClose={() => setShowVerificationModal(false)}
+      />
     </KeyboardAvoidingView>
   );
 };
@@ -173,5 +192,4 @@ const styles = StyleSheet.create({
   errorBanner: { ...typography.bodySm, color: colors.danger, marginBottom: spacing.sm },
   infoBanner: { ...typography.bodySm, color: colors.info, marginBottom: spacing.sm },
   forgot: { ...typography.titleMd, color: colors.textPrimary },
-  demoNote: { ...typography.caption, color: colors.textTertiary, textAlign: 'center', marginTop: spacing.lg },
 });

@@ -10,13 +10,14 @@ import { InputField } from '../../components/InputField';
 import { PrimaryButton } from '../../components/PrimaryButton';
 import { useAuth } from '../../context/AuthContext';
 import { useRewards } from '../../context/RewardsContext';
+import { EmailVerificationModal } from '../../components/EmailVerificationModal';
 import { UserRole } from '../../types';
 
 type Props = NativeStackScreenProps<AuthStackParamList, 'Signup'>;
 
 export const SignupScreen: React.FC<Props> = ({ navigation }) => {
   const insets = useSafeAreaInsets();
-  const { signup } = useAuth();
+  const { signup, resendVerificationEmail } = useAuth();
   const { redeemReferralCode } = useRewards();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -31,16 +32,19 @@ export const SignupScreen: React.FC<Props> = ({ navigation }) => {
   // check your email..."), which this screen then rendered in the same red
   // error banner as a real failure -- a genuine success looking exactly
   // like a broken signup. AuthContext now reports that case as
-  // `success: true` + `info`; this is its own piece of state so it renders
-  // in a distinct, positive banner instead of ever sharing styling with a
-  // real error.
-  const [info, setInfo] = useState<string | undefined>();
+  // `success: true` + `info`.
+  //
+  // PRODUCT IMPROVEMENT -- that `info` used to render as one line of plain
+  // text, easy to miss and inconsistent with how VELORA treats every other
+  // important system moment. It now opens EmailVerificationModal instead: a
+  // focused, on-brand popup with the actual email address, an "Open Mail
+  // App" action, and a real resend flow -- see that component for details.
+  const [showVerificationModal, setShowVerificationModal] = useState(false);
   const [referralNote, setReferralNote] = useState<string | undefined>();
   const [loading, setLoading] = useState(false);
 
   const onSignup = async () => {
     setError(undefined);
-    setInfo(undefined);
     setLoading(true);
     const result = await signup({ name, email, password, confirmPassword, role });
     // Real referral redemption -- only runs once signup actually issued a
@@ -56,10 +60,10 @@ export const SignupScreen: React.FC<Props> = ({ navigation }) => {
     if (!result.success) {
       setError(result.error);
     } else if (result.info) {
-      // Success, but no session yet (email confirmation pending) -- stay on
-      // this screen and show the positive confirmation instead of silently
-      // doing nothing, which would look like the button didn't work.
-      setInfo(result.info);
+      // Success, but no session yet (email confirmation pending) -- surface
+      // the verification modal instead of silently doing nothing, which
+      // would look like the button didn't work.
+      setShowVerificationModal(true);
     }
     // A success with neither `error` nor `info` means a session WAS issued
     // immediately -- nothing to show here, the auth-state listener already
@@ -144,11 +148,23 @@ export const SignupScreen: React.FC<Props> = ({ navigation }) => {
           {referralNote ? <Text style={styles.referralNote}>{referralNote}</Text> : null}
 
           {error ? <Text style={styles.errorBanner}>{error}</Text> : null}
-          {info ? <Text style={styles.infoBanner}>{info}</Text> : null}
 
           <PrimaryButton label="Create Account" onPress={onSignup} loading={loading} style={{ marginTop: spacing.md }} />
         </View>
       </ScrollView>
+
+      <EmailVerificationModal
+        visible={showVerificationModal}
+        email={email.trim()}
+        onResend={resendVerificationEmail}
+        onClose={() => {
+          setShowVerificationModal(false);
+          // Nothing to do here yet -- log in is the only next real action,
+          // and staying on the signup form after a completed signup invites
+          // a confusing second attempt at creating the same account.
+          navigation.navigate('Login');
+        }}
+      />
     </KeyboardAvoidingView>
   );
 };
@@ -190,6 +206,5 @@ const styles = StyleSheet.create({
   roleSubtitle: { ...typography.bodySm, color: colors.textSecondary, marginTop: 2 },
   roleSubtitleActive: { color: 'rgba(255,255,255,0.7)' },
   errorBanner: { ...typography.bodySm, color: colors.danger, marginBottom: spacing.sm },
-  infoBanner: { ...typography.bodySm, color: colors.success, marginBottom: spacing.sm },
   referralNote: { ...typography.caption, color: colors.warning, marginBottom: spacing.sm },
 });

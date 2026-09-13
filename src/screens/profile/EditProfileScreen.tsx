@@ -12,7 +12,7 @@ import { useAuth } from '../../context/AuthContext';
 import { isValidIndianPhone } from '../../utils/format';
 import { getProfileCompleteness } from '../../utils/profile';
 import { showToast } from '../../utils/toast';
-import { uploadAvatar } from '../../utils/uploadImage';
+import { isStaleLocalFileMessage, readUriAsBlobWithRetry, STALE_LOCAL_PHOTO_MESSAGE, uploadAvatar } from '../../utils/uploadImage';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'EditProfile'>;
 
@@ -28,6 +28,13 @@ export const EditProfileScreen: React.FC<Props> = ({ navigation }) => {
   // saved is always a real, permanent URL every device can load -- not the
   // local-only URI itself.
   const [avatarUri, setAvatarUri] = useState(user?.avatar ?? '');
+  // PHASE 1 IMAGE PIPELINE FIX -- the actual bytes of a newly-picked avatar,
+  // read immediately in onChangePhoto (see that function's comment) rather
+  // than re-read from avatarUri at Save time, which is the confirmed root
+  // cause fix for the same stale-picker-grant 404 covered in
+  // OwnerAddCarScreen. Stays undefined for the existing (already-uploaded)
+  // avatar URL, in which case uploadAvatar's own https passthrough applies.
+  const [avatarBlob, setAvatarBlob] = useState<Blob | undefined>(undefined);
   const [saving, setSaving] = useState(false);
 
   // Only show a field's error after the person has actually interacted with
@@ -63,7 +70,27 @@ export const EditProfileScreen: React.FC<Props> = ({ navigation }) => {
       quality: 0.7,
     });
     if (!result.canceled && result.assets[0]) {
-      setAvatarUri(result.assets[0].uri);
+      const uri = result.assets[0].uri;
+      // PHASE 1 IMAGE PIPELINE FIX -- read the picked photo's bytes right
+      // now, while the picker's read grant on it is certainly still fresh,
+      // instead of waiting until Save (potentially much later) to read a
+      // URI that may have already gone stale (see the matching comment in
+      // OwnerAddCarScreen.prefetchPickedPhotos and uploadImage.ts's
+      // `preFetchedBlob`). Surfaces immediately if even this fails, rather
+      // than letting the person fill in the rest of the form around a photo
+      // that was never actually readable.
+      try {
+        const blob = await readUriAsBlobWithRetry(uri, 'photo');
+        setAvatarUri(uri);
+        setAvatarBlob(blob);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.log(`VELORA_AVATAR_PREFETCH_FAILED: ${message}`);
+        Alert.alert(
+          "Couldn't load photo",
+          isStaleLocalFileMessage(message) ? STALE_LOCAL_PHOTO_MESSAGE : "That photo couldn't be loaded. Please try selecting it again.",
+        );
+      }
     }
   };
 
@@ -79,7 +106,7 @@ export const EditProfileScreen: React.FC<Props> = ({ navigation }) => {
       // photo this edit) passes through untouched. Without this the account
       // would save the on-device-only picker URI directly, which is exactly
       // why profile photos weren't showing up on other devices.
-      const uploadedAvatar = avatarUri ? await uploadAvatar(avatarUri, user.id) : user.avatar;
+      const uploadedAvatar = avatarUri ? await uploadAvatar(avatarUri, user.id, avatarBlob) : user.avatar;
 
       // Only ever writes trimmed, already-validated values — never falls
       // back to silently keeping the old value when what's on screen is
@@ -107,12 +134,19 @@ export const EditProfileScreen: React.FC<Props> = ({ navigation }) => {
       const message = err instanceof Error ? err.message : 'Unknown error';
       console.log(`VELORA_PROFILE_SAVE_FAILED: ${message}`);
       // PRODUCTION-AUDIT FIX -- same accurate-error-classification pattern as
-      // OwnerAddCarScreen: a stale/expired session needs a re-login, not a
-      // "check your connection" retry that will just fail again the same way.
+      // OwnerAddCarScreen: a stale/expired session needs a re-login, and a
+      // stale picked-photo URI (confirmed device-log root cause -- a 404
+      // reading the file, not a network issue) needs "pick it again", neither
+      // of which a "check your connection" retry actually fixes.
+      const isStalePhoto = isStaleLocalFileMessage(message);
       const isSessionError = /session has expired/i.test(message);
       Alert.alert(
         "Couldn't save changes",
-        isSessionError ? 'Your session expired. Please log in again and retry.' : 'Please check your connection and try again.',
+        isStalePhoto
+          ? 'Selected photo is no longer available. Please choose it again.'
+          : isSessionError
+            ? 'Your session expired. Please log in again and retry.'
+            : 'Please check your connection and try again.',
       );
     } finally {
       setSaving(false);

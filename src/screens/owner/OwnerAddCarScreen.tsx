@@ -17,7 +17,7 @@ import { generateId } from '../../utils/format';
 import { detectCurrentLocationLabel, requestForegroundPermission } from '../../hooks/useDeviceLocation';
 import { getCarQuantity } from '../../utils/inventory';
 import { showToast } from '../../utils/toast';
-import { uploadCarImages } from '../../utils/uploadImage';
+import { isStaleLocalFileMessage, PickedImage, readUriAsBlobWithRetry, uploadCarImages } from '../../utils/uploadImage';
 import { Car, CarCategory, FuelType, RentalMode, Transmission } from '../../types';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'OwnerAddCar'>;
@@ -57,7 +57,7 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
   const [existingCar] = useState<Car | undefined>(() => (editingCarId ? getCarById(editingCarId) : undefined));
   const isEditMode = !!existingCar;
 
-  const [images, setImages] = useState<string[]>(existingCar?.images ?? []);
+  const [images, setImages] = useState<PickedImage[]>(existingCar?.images.map((uri) => ({ uri })) ?? []);
   const [name, setName] = useState(existingCar?.name ?? '');
   const [brandId, setBrandId] = useState(existingCar?.brandId ?? brands[0].id);
   // Model isn't a separate persisted field on Car (name stays one composed
@@ -118,8 +118,47 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
     });
   };
 
-  const addImages = (uris: string[]) => {
-    setImages((prev) => [...prev, ...uris].slice(0, MAX_PHOTOS));
+  const addImages = (items: PickedImage[]) => {
+    setImages((prev) => [...prev, ...items].slice(0, MAX_PHOTOS));
+  };
+
+  // PHASE 1 IMAGE PIPELINE FIX -- reads each newly-picked photo's actual
+  // bytes right now, at pick time, instead of waiting until Save to read it
+  // (see the matching comment on uploadImage.ts's `preFetchedBlob`). This is
+  // the real fix for the confirmed root cause (device-log verified):
+  // Android's system Photo Picker only guarantees its content:// URI stays
+  // readable for a short window around the pick, and this form can easily
+  // stay open for minutes while an owner fills in the rest of a new
+  // listing -- by the time they tap Save, that grant may already be gone,
+  // which surfaced as an HTTP 404 with no real network problem at all.
+  // Reading the bytes into memory immediately, while the grant is certainly
+  // still fresh, means Save never has to re-read the original URI. Reuses
+  // readUriAsBlobWithRetry (already timeout/retry/session/empty-blob
+  // hardened) instead of a second, duplicate read path. Each photo in a
+  // multi-select pick is read independently via Promise.allSettled, so one
+  // bad photo can never block the others from being added.
+  const prefetchPickedPhotos = async (uris: string[]): Promise<PickedImage[]> => {
+    const results = await Promise.allSettled(uris.map((uri) => readUriAsBlobWithRetry(uri, 'photo')));
+    const picked: PickedImage[] = [];
+    let failedCount = 0;
+    results.forEach((result, index) => {
+      if (result.status === 'fulfilled') {
+        picked.push({ uri: uris[index], blob: result.value });
+      } else {
+        failedCount += 1;
+        const message = result.reason instanceof Error ? result.reason.message : String(result.reason);
+        console.log(`VELORA_PHOTO_PREFETCH_FAILED: ${message}`);
+      }
+    });
+    if (failedCount > 0) {
+      Alert.alert(
+        failedCount === uris.length ? "Couldn't load photo" : 'Some photos skipped',
+        failedCount === uris.length
+          ? 'Selected photo is no longer available. Please select the photo again.'
+          : `${failedCount} of ${uris.length} photos couldn't be loaded and were skipped. Please try selecting them again.`,
+      );
+    }
+    return picked;
   };
 
   const onPickFromGallery = async () => {
@@ -135,7 +174,8 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
       quality: 0.7,
     });
     if (!result.canceled) {
-      addImages(result.assets.map((a) => a.uri));
+      const picked = await prefetchPickedPhotos(result.assets.map((a) => a.uri));
+      if (picked.length > 0) addImages(picked);
     }
   };
 
@@ -147,12 +187,13 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
     }
     const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.7 });
     if (!result.canceled) {
-      addImages(result.assets.map((a) => a.uri));
+      const picked = await prefetchPickedPhotos(result.assets.map((a) => a.uri));
+      if (picked.length > 0) addImages(picked);
     }
   };
 
   const removeImage = (uri: string) => {
-    setImages((prev) => prev.filter((i) => i !== uri));
+    setImages((prev) => prev.filter((img) => img.uri !== uri));
   };
 
   const onSubmit = async () => {
@@ -276,19 +317,29 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
       // an expired session needs a re-login (retrying the same save will
       // just fail again), which is a different, more useful instruction than
       // the generic connection message.
+      // CONFIRMED ROOT CAUSE (device-log verified) -- a picked Android photo
+      // URI can 404 when the OS has invalidated the picker's read grant
+      // (most commonly the Android 13+ system Photo Picker's short-lived
+      // grant). This is NOT a network/connection problem, so it gets its own
+      // precise, actionable message instead of falling into the generic
+      // "check your connection" bucket, which was actively misleading for
+      // this exact case -- see isStaleLocalFileMessage in uploadImage.ts.
+      const isStalePhoto = isStaleLocalFileMessage(message);
       const isSessionError = /session has expired/i.test(message);
       const isNetworkError = /network request failed|fetch failed|network error|timed out/i.test(message);
       const isImageUploadError = /couldn't upload image|photo \d+ of \d+ failed/i.test(message);
       setError(
-        isSessionError
-          ? 'Your session expired while uploading. Please log in again and retry.'
-          : isNetworkError
-            ? "You're offline. Check your connection and try again."
-            : isImageUploadError
-              ? "One of your photos couldn't be uploaded. Check your connection and try again."
-              : isEditMode
-                ? "We couldn't save your changes right now. Please try again."
-                : "We couldn't publish this listing right now. Please try again.",
+        isStalePhoto
+          ? 'Selected photo is no longer available. Please remove it and select it again.'
+          : isSessionError
+            ? 'Your session expired while uploading. Please log in again and retry.'
+            : isNetworkError
+              ? "You're offline. Check your connection and try again."
+              : isImageUploadError
+                ? "One of your photos couldn't be uploaded. Check your connection and try again."
+                : isEditMode
+                  ? "We couldn't save your changes right now. Please try again."
+                  : "We couldn't publish this listing right now. Please try again.",
       );
     } finally {
       setSaving(false);
@@ -302,10 +353,10 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
       <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: spacing.xxl }} keyboardShouldPersistTaps="handled">
         <Text style={styles.label}>Car Photos</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: spacing.sm }}>
-          {images.map((uri) => (
-            <View key={uri} style={styles.photoThumbWrap}>
-              <Image source={{ uri }} style={styles.photoThumb} />
-              <Pressable style={styles.removePhotoBtn} onPress={() => removeImage(uri)} hitSlop={6} accessibilityLabel="Remove photo">
+          {images.map((img) => (
+            <View key={img.uri} style={styles.photoThumbWrap}>
+              <Image source={{ uri: img.uri }} style={styles.photoThumb} />
+              <Pressable style={styles.removePhotoBtn} onPress={() => removeImage(img.uri)} hitSlop={6} accessibilityLabel="Remove photo">
                 <Ionicons name="close" size={14} color={colors.white} />
               </Pressable>
             </View>

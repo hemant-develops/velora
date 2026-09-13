@@ -100,6 +100,12 @@ interface AuthContextValue {
   // -- so it needs no new schema, RLS policy, or SECURITY DEFINER function,
   // and touches no existing login/signup/session logic.
   resetPassword: (email: string) => Promise<AuthResult>;
+  // PRODUCT IMPROVEMENT -- backs the new EmailVerificationModal's "Resend"
+  // action. Uses Supabase Auth's own built-in resend endpoint (the same
+  // rate-limited, server-managed flow as the original confirmation email) --
+  // no new schema, RPC, or RLS needed, and the same `emailRedirectTo` as
+  // signup so a resent link lands back in this app identically.
+  resendVerificationEmail: (email: string) => Promise<AuthResult>;
   submitOwnerVerification: (input: OwnerVerificationInput) => Promise<void>;
   getUserById: (id: string) => AppUser | undefined;
   // Final non-payment hardening -- resolves another user's PUBLIC-safe
@@ -582,6 +588,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return { success: true };
   };
 
+  const resendVerificationEmail = async (email: string): Promise<AuthResult> => {
+    if (!isValidEmail(email)) return { success: false, error: 'Enter a valid email address.' };
+    const { error } = await supabase.auth.resend({
+      type: 'signup',
+      email: email.trim(),
+      options: { emailRedirectTo: AUTH_CALLBACK_URL },
+    });
+    if (error) {
+      console.log(`VELORA_AUTH_RESEND_VERIFICATION_ERROR: ${error.message}`);
+      // Supabase's resend endpoint is itself rate-limited server-side (a
+      // real, expected outcome if the person taps Resend quickly) -- surface
+      // that message as-is rather than a generic failure, since it's already
+      // an accurate, actionable sentence ("For security purposes, you can
+      // only request this after N seconds.").
+      return { success: false, error: error.message };
+    }
+    return { success: true };
+  };
+
   // Demo verification: instantly "approved" (a real build would call an
   // actual KYC/ID-verification provider here). Verifying also switches the
   // account into Owner Mode right away, since that's the whole point. Only
@@ -672,6 +697,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       updateProfile,
       switchRole,
       resetPassword,
+      resendVerificationEmail,
       submitOwnerVerification,
       getUserById,
       fetchPublicProfile,

@@ -40,6 +40,29 @@ import { supabase } from '../lib/supabase';
 // below is exported so that call site shares this same hardening instead of
 // duplicating (and drifting from) it.
 
+// PHASE 1 IMAGE PIPELINE FIX (confirmed root cause, device-log verified) --
+// the four fixes above still left one real gap: retrying a *fresh* read of
+// the same picker URI does nothing when the underlying OS read grant has
+// been permanently revoked (not a transient blip). Android's system Photo
+// Picker (and some gallery apps) only guarantee a content:// URI stays
+// readable for a short window around the pick -- if the owner keeps filling
+// in the rest of this long form for a while before tapping Save, that grant
+// can already be gone by the time an upload actually runs, surfacing as an
+// HTTP 404 with no real network problem involved at all.
+//
+// The fix is `preFetchedBlob` on every function below: OwnerAddCarScreen and
+// EditProfileScreen now call readUriAsBlobWithRetry() themselves immediately
+// after the picker returns -- while the grant is certainly still fresh --
+// and hand the already-read Blob straight through here, so nothing ever has
+// to re-read the original URI at Save time, however much later that is.
+// Deliberately implemented with zero new dependencies: a Blob already read
+// into memory is just as durable as a file copied to disk for the lifetime
+// of this form, and this avoids adding a native module (which would need a
+// full native rebuild, not just an OTA update, before it could ship at all,
+// and expo-file-system is not currently installed in this project). A
+// caller that doesn't pass a blob (or whose own pre-read failed) falls
+// through to the original at-upload-time read below, unchanged.
+
 const READ_TIMEOUT_MS = 30000; // generous for mobile networks, but bounded
 const MAX_ATTEMPTS = 3;
 const RETRY_BASE_DELAY_MS = 900;
@@ -61,13 +84,46 @@ const withTimeout = <T,>(promise: Promise<T>, ms: number, label: string): Promis
   ]);
 
 const isRetryableMessage = (message: string): boolean =>
+  !isStaleLocalFileMessage(message) &&
   /network|timed out|fetch failed|timeout|abort|empty when read|socket|connection/i.test(message);
+
+// A confirmed, reproducible root cause (device-log verified, not a network
+// symptom): fetch() on the picked Android photo URI can return HTTP 404 when
+// the OS has invalidated the picker's read grant on that file -- most
+// commonly the Android 13+ system Photo Picker, which only guarantees the
+// URI is readable for a short window around the pick, not indefinitely.
+// Unlike a dropped-packet network failure, this is NOT transient: the exact
+// same URI will return 404 again on every retry (retrying only wastes the
+// user's time and the timeout budget), and it will not un-break itself by
+// waiting -- the underlying file grant is gone. So this is deliberately
+// excluded from isRetryableMessage above and given its own precise,
+// actionable message instead of being retried 3x and then shown the same
+// generic "check your connection" text that a real network failure gets
+// (which was actively misleading here, per the confirmed device log: no
+// network problem existed at all).
+// Exported so the screens that show this error to the user (OwnerAddCarScreen,
+// EditProfileScreen) can recognize it precisely instead of duplicating the
+// "status 404" substring match, and show STALE_LOCAL_PHOTO_MESSAGE instead of
+// a generic/misleading "check your connection" message.
+export const STALE_LOCAL_PHOTO_MESSAGE = 'Selected photo is no longer available. Please select the photo again.';
+
+// Matches both the raw "status 404" (before readUriAsBlobWithRetry converts
+// it to STALE_LOCAL_PHOTO_MESSAGE) and the friendly message itself (once it's
+// been wrapped by an outer catch, e.g. uploadImageIfLocalInternal's "Couldn't
+// upload image: ..." or uploadCarImages' "Photo N of M failed: ...") -- so
+// this stays correctly non-retryable and correctly identifiable no matter
+// which layer is inspecting the message.
+export const isStaleLocalFileMessage = (message: string): boolean =>
+  /status 404/i.test(message) || message.includes(STALE_LOCAL_PHOTO_MESSAGE);
 
 // Reads an on-device URI (file://... or content://...) into a Blob, with a
 // pre-read session-freshness check, a bounded timeout, up to 3 attempts on
 // transient failures, and 0-byte-blob detection (see the top-of-file
 // comment for why each of these exists). Shared by every place in the app
-// that turns a picked file into upload bytes.
+// that turns a picked file into upload bytes -- including the pick-time
+// pre-fetch in OwnerAddCarScreen/EditProfileScreen (see the Phase 1 comment
+// above), which is exactly why this was already the right shared primitive
+// to reuse rather than adding a second, parallel read path.
 export const readUriAsBlobWithRetry = async (uri: string, label = 'file'): Promise<Blob> => {
   let lastError: Error = new Error('Unknown read error');
 
@@ -102,8 +158,10 @@ export const readUriAsBlobWithRetry = async (uri: string, label = 'file'): Promi
       return blob;
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
+      const stale = isStaleLocalFileMessage(lastError.message);
       console.log(
-        `VELORA_MEDIA_READ_ATTEMPT_FAILED: label=${label} attempt=${attempt}/${MAX_ATTEMPTS} error=${lastError.message}`,
+        `VELORA_MEDIA_READ_ATTEMPT_FAILED: label=${label} attempt=${attempt}/${MAX_ATTEMPTS} error=${lastError.message}` +
+          (stale ? ' (stale local file -- not retrying)' : ''),
       );
       const canRetry = attempt < MAX_ATTEMPTS && isRetryableMessage(lastError.message);
       if (canRetry) {
@@ -114,16 +172,36 @@ export const readUriAsBlobWithRetry = async (uri: string, label = 'file'): Promi
     }
   }
 
+  // A stale/invalid local file (see isStaleLocalFileMessage above) gets a
+  // precise, actionable message instead of the raw "status 404" text -- the
+  // fix is "pick the photo again", not "check your connection", and showing
+  // the wrong one is exactly what made this bug hard to diagnose from the
+  // user-facing message alone.
+  if (isStaleLocalFileMessage(lastError.message)) {
+    throw new Error(STALE_LOCAL_PHOTO_MESSAGE);
+  }
   throw lastError;
 };
 
 type UploadResult = { url: string; storagePath: string | null };
 
+// A photo/avatar picked on-device: `uri` for display and extension/MIME
+// detection, plus an optional `blob` already read at pick time (see the
+// Phase 1 comment above). `blob` is omitted for an already-uploaded https
+// URL (nothing to pre-read) or when a pick-time pre-read failed and the
+// screen fell back to the original at-upload-time read.
+export type PickedImage = { uri: string; blob?: Blob };
+
 // Internal implementation shared by uploadImageIfLocal (public, URL-only
 // return, used by uploadAvatar) and uploadCarImages (needs the storage path
 // too, so a later failure in the same batch can clean up what already
 // succeeded instead of leaving it orphaned in Storage).
-const uploadImageIfLocalInternal = async (uri: string, bucket: string, path: string): Promise<UploadResult> => {
+const uploadImageIfLocalInternal = async (
+  uri: string,
+  bucket: string,
+  path: string,
+  preFetchedBlob?: Blob,
+): Promise<UploadResult> => {
   if (/^https?:\/\//i.test(uri)) return { url: uri, storagePath: null };
 
   // Computed once (not per retry attempt) so every retry targets the exact
@@ -139,7 +217,16 @@ const uploadImageIfLocalInternal = async (uri: string, bucket: string, path: str
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      const blob = await readUriAsBlobWithRetry(uri, 'photo');
+      // PHASE 1 IMAGE PIPELINE FIX -- reuse the exact blob read at pick time
+      // on every attempt instead of re-reading `uri`. This is the real fix
+      // for the confirmed stale-grant root cause: the bytes were already
+      // safely captured the moment the picker returned, so a retry here
+      // only ever needs to retry the storage.upload() network call itself,
+      // never a URI read that could fail for reasons unrelated to the
+      // network. Falls back to the original per-attempt read when no
+      // pre-fetched blob is available, preserving prior behavior exactly
+      // for that case.
+      const blob = preFetchedBlob ?? (await readUriAsBlobWithRetry(uri, 'photo'));
 
       const { error } = await withTimeout<{ data: unknown; error: { message: string } | null }>(
         supabase.storage.from(bucket).upload(fullPath, blob, { contentType, upsert: true }),
@@ -173,21 +260,30 @@ const uploadImageIfLocalInternal = async (uri: string, bucket: string, path: str
   throw new Error(`Couldn't upload image: ${lastError.message}`);
 };
 
-export const uploadImageIfLocal = async (uri: string, bucket: string, path: string): Promise<string> =>
-  (await uploadImageIfLocalInternal(uri, bucket, path)).url;
+export const uploadImageIfLocal = async (
+  uri: string,
+  bucket: string,
+  path: string,
+  preFetchedBlob?: Blob,
+): Promise<string> => (await uploadImageIfLocalInternal(uri, bucket, path, preFetchedBlob)).url;
 
-// Uploads every local URI in `uris` (passing through any that are already
-// real URLs), one at a time under `${bucket}/${userId}/...` so storage RLS
-// (see supabase_migration_multidevice.sql section 9d) can scope writes to
-// each user's own folder. `keyPrefix` disambiguates multiple images from
-// the same upload (index-based) so they don't overwrite each other.
-export const uploadCarImages = async (uris: string[], ownerId: string): Promise<string[]> => {
+// Uploads every local photo in `images` (passing through any whose `uri` is
+// already a real URL), one at a time under `${bucket}/${ownerId}/...` so
+// storage RLS (see supabase_migration_multidevice.sql section 9d) can scope
+// writes to each user's own folder. Index-based path suffixes disambiguate
+// multiple images from the same upload so they don't overwrite each other.
+export const uploadCarImages = async (images: PickedImage[], ownerId: string): Promise<string[]> => {
   const uploaded: string[] = [];
   const uploadedPaths: string[] = [];
 
-  for (let i = 0; i < uris.length; i++) {
+  for (let i = 0; i < images.length; i++) {
     try {
-      const result = await uploadImageIfLocalInternal(uris[i], 'car-photos', `${ownerId}/${Date.now()}_${i}`);
+      const result = await uploadImageIfLocalInternal(
+        images[i].uri,
+        'car-photos',
+        `${ownerId}/${Date.now()}_${i}`,
+        images[i].blob,
+      );
       uploaded.push(result.url);
       if (result.storagePath) uploadedPaths.push(result.storagePath);
     } catch (err) {
@@ -209,11 +305,11 @@ export const uploadCarImages = async (uris: string[], ownerId: string): Promise<
       // Names exactly which photo failed (out of how many) so the error is
       // debuggable from a logcat pull even though the on-screen message
       // stays a simple, user-facing sentence (see OwnerAddCarScreen).
-      throw new Error(`Photo ${i + 1} of ${uris.length} failed: ${message}`);
+      throw new Error(`Photo ${i + 1} of ${images.length} failed: ${message}`);
     }
   }
   return uploaded;
 };
 
-export const uploadAvatar = async (uri: string, userId: string): Promise<string> =>
-  uploadImageIfLocal(uri, 'avatars', `${userId}/${Date.now()}`);
+export const uploadAvatar = async (uri: string, userId: string, preFetchedBlob?: Blob): Promise<string> =>
+  uploadImageIfLocal(uri, 'avatars', `${userId}/${Date.now()}`, preFetchedBlob);
