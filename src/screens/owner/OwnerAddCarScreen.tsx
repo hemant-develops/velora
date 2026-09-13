@@ -270,16 +270,25 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
       // photo upload that failed mid-save (the exact failure a background/
       // foreground trip to Camera or Gallery can trigger). Falls back to the
       // original generic copy for everything else, matching prior behavior.
-      const isNetworkError = /network request failed|fetch failed|network error/i.test(message);
-      const isImageUploadError = /couldn't upload image/i.test(message);
+      // PRODUCTION-AUDIT FIX (image-upload root cause pass) -- uploadImage.ts
+      // now retries transient failures internally, so a message that still
+      // reaches here survived 3 attempts and is worth distinguishing further:
+      // an expired session needs a re-login (retrying the same save will
+      // just fail again), which is a different, more useful instruction than
+      // the generic connection message.
+      const isSessionError = /session has expired/i.test(message);
+      const isNetworkError = /network request failed|fetch failed|network error|timed out/i.test(message);
+      const isImageUploadError = /couldn't upload image|photo \d+ of \d+ failed/i.test(message);
       setError(
-        isNetworkError
-          ? "You're offline. Check your connection and try again."
-          : isImageUploadError
-            ? "One of your photos couldn't be uploaded. Check your connection and try again."
-            : isEditMode
-              ? "We couldn't save your changes right now. Please try again."
-              : "We couldn't publish this listing right now. Please try again.",
+        isSessionError
+          ? 'Your session expired while uploading. Please log in again and retry.'
+          : isNetworkError
+            ? "You're offline. Check your connection and try again."
+            : isImageUploadError
+              ? "One of your photos couldn't be uploaded. Check your connection and try again."
+              : isEditMode
+                ? "We couldn't save your changes right now. Please try again."
+                : "We couldn't publish this listing right now. Please try again.",
       );
     } finally {
       setSaving(false);

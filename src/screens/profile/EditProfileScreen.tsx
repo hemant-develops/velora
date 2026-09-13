@@ -106,7 +106,14 @@ export const EditProfileScreen: React.FC<Props> = ({ navigation }) => {
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
       console.log(`VELORA_PROFILE_SAVE_FAILED: ${message}`);
-      Alert.alert("Couldn't save changes", 'Please check your connection and try again.');
+      // PRODUCTION-AUDIT FIX -- same accurate-error-classification pattern as
+      // OwnerAddCarScreen: a stale/expired session needs a re-login, not a
+      // "check your connection" retry that will just fail again the same way.
+      const isSessionError = /session has expired/i.test(message);
+      Alert.alert(
+        "Couldn't save changes",
+        isSessionError ? 'Your session expired. Please log in again and retry.' : 'Please check your connection and try again.',
+      );
     } finally {
       setSaving(false);
     }

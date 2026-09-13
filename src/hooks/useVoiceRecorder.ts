@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useAudioRecorder, RecordingPresets, requestRecordingPermissionsAsync, setAudioModeAsync } from 'expo-audio';
 import { supabase } from '../lib/supabase';
+import { readUriAsBlobWithRetry } from '../utils/uploadImage';
 
 export type VoiceRecorderState = 'idle' | 'recording' | 'uploading';
 
@@ -41,8 +42,11 @@ export const useVoiceRecorder = () => {
       const uri = recorder.uri;
       if (!uri) return null;
       setState('uploading');
-      const response = await fetch(uri);
-      const blob = await response.blob();
+      // PRODUCTION-AUDIT FIX -- shares the same retry/timeout/empty-blob
+      // hardening as car photo & avatar uploads (see uploadImage.ts); the
+      // raw fetch(uri).blob() call here had the exact same flaky-content://
+      // failure mode, just for recorded audio instead of picked photos.
+      const blob = await readUriAsBlobWithRetry(uri, 'voice note');
       const path = `${conversationId}/${Date.now()}.m4a`;
       const { error } = await supabase.storage.from('chat-audio').upload(path, blob, { contentType: 'audio/m4a' });
       if (error) {
