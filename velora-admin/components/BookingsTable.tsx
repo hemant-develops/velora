@@ -65,7 +65,7 @@ export const BookingsTable = ({ rows }: { rows: BookingRow[] }) => {
         >
           {STATUS_OPTIONS.map((s) => (
             <option key={s} value={s}>
-              {s === 'all' ? 'All statuses' : s[0].toUpperCase() + s.slice(1)}
+              {s === 'all' ? 'All statuses' : s.charAt(0).toUpperCase() + s.slice(1)}
             </option>
           ))}
         </select>
