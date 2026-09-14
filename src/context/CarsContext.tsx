@@ -65,6 +65,7 @@ interface CarRow {
   owner_id: string;
   name: string;
   brand_id: string;
+  model_id: string | null;
   category: string;
   images: string[];
   price_per_day: number;
@@ -91,6 +92,7 @@ const rowToCar = (row: CarRow): Car => ({
   id: row.id,
   name: row.name,
   brandId: row.brand_id,
+  modelId: row.model_id ?? undefined,
   category: row.category as Car['category'],
   images: row.images ?? [],
   pricePerDay: row.price_per_day,
@@ -131,6 +133,7 @@ const carToRow = (car: Car) => ({
   owner_id: car.ownerId,
   name: car.name,
   brand_id: car.brandId,
+  model_id: car.modelId ?? null,
   category: car.category,
   images: car.images,
   price_per_day: Math.round(car.pricePerDay),

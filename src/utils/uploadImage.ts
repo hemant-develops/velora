@@ -228,8 +228,23 @@ const uploadImageIfLocalInternal = async (
       // for that case.
       const blob = preFetchedBlob ?? (await readUriAsBlobWithRetry(uri, 'photo'));
 
+      // DIAGNOSTIC -- isolates the "new row violates row-level security
+      // policy" report seen after the stale-URI fix landed. The RLS policy
+      // itself was already independently verified correct via a direct
+      // curl-authenticated upload, so this checks the one thing that test
+      // couldn't: whether THIS APP's own client actually has a live session
+      // attached at the exact moment it calls storage.upload(), and whether
+      // the path this upload is about to write to matches that session's
+      // user. Deliberately logs booleans only -- never the session token,
+      // the user id, or the file path.
+      const { data: authState } = await supabase.auth.getSession();
+      const hasSession = !!authState.session;
+      const pathOwnerId = path.split('/')[0];
+      const userIdMatchesPath = !!authState.session && authState.session.user.id === pathOwnerId;
+      console.log(`VELORA_IMAGE_AUTH_STATE: hasSession=${hasSession} userIdMatchesPath=${userIdMatchesPath}`);
+
       const { error } = await withTimeout<{ data: unknown; error: { message: string } | null }>(
-        supabase.storage.from(bucket).upload(fullPath, blob, { contentType, upsert: true }),
+        supabase.storage.from(bucket).upload(fullPath, blob, { contentType, upsert: false }),
         READ_TIMEOUT_MS,
         'Uploading photo',
       );

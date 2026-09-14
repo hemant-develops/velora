@@ -1,0 +1,26 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  @apply bg-velora-surface text-velora-black antialiased;
+}
+
+/* Small, reusable primitives kept here instead of a component library —
+   Phase 1 has few enough distinct UI patterns (cards, badges, a table,
+   nav items) that a full design-system dependency isn't justified yet. */
+.card {
+  @apply rounded-xl border border-velora-border bg-white p-5 shadow-sm;
+}
+
+.badge {
+  @apply inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium;
+}
+
+.skeleton {
+  @apply animate-pulse rounded-md bg-velora-border/70;
+}

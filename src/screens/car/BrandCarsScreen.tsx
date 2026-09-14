@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { FlatList, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -6,10 +6,11 @@ import { RootStackParamList } from '../../navigation/types';
 import { colors, spacing, typography } from '../../theme';
 import { CircleIconButton } from '../../components/CircleIconButton';
 import { CarCard } from '../../components/CarCard';
+import { Chip } from '../../components/Chip';
 import { EmptyState } from '../../components/EmptyState';
 import { PrimaryButton } from '../../components/PrimaryButton';
 import { useCars } from '../../context/CarsContext';
-import { brands } from '../../data/brands';
+import { useCatalog } from '../../context/CatalogContext';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'BrandCars'>;
 
@@ -35,9 +36,22 @@ type Props = NativeStackScreenProps<RootStackParamList, 'BrandCars'>;
 export const BrandCarsScreen: React.FC<Props> = ({ route, navigation }) => {
   const insets = useSafeAreaInsets();
   const { cars, setSearchQuery, resetFilters } = useCars();
+  const { brands, getModelsForBrand } = useCatalog();
   const { brandId } = route.params;
   const brand = brands.find((b) => b.id === brandId);
   const brandCars = cars.filter((c) => c.brandId === brandId);
+
+  // PHASE A (Catalog) -- Browse by Brand -> Model -> Cars. Only canonical,
+  // reviewed models show as filter chips here (a still-pending custom model
+  // some other owner submitted has no business appearing as a public browse
+  // filter yet) -- see car_models RLS in the migration for why `isActive`
+  // is exactly the right gate. A brand with no catalog models at all (the
+  // pre-existing exotic/global brands, or any brand an admin hasn't
+  // modeled yet) simply skips this row entirely, same fallback-to-nothing
+  // pattern already used in the owner listing wizard's Model picker.
+  const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
+  const models = getModelsForBrand(brandId).filter((m) => m.isActive);
+  const visibleCars = selectedModelId ? brandCars.filter((c) => c.modelId === selectedModelId) : brandCars;
 
   // "View All Cars" only ever appears here when this specific brand has zero
   // active listings — it's promising the renter every active car, not
@@ -56,15 +70,25 @@ export const BrandCarsScreen: React.FC<Props> = ({ route, navigation }) => {
     <FlatList
       style={{ flex: 1, backgroundColor: colors.background }}
       contentContainerStyle={{ paddingHorizontal: spacing.lg, paddingBottom: insets.bottom + spacing.xl }}
-      data={brandCars}
+      data={visibleCars}
       keyExtractor={(item) => item.id}
       ListHeaderComponent={
-        <View style={[styles.header, { paddingTop: insets.top + spacing.sm }]}>
-          <CircleIconButton icon="arrow-back" onPress={() => navigation.goBack()} accessibilityLabel="Go back" background={colors.surface} />
-          <View style={{ flex: 1, marginLeft: spacing.sm }}>
-            <Text style={typography.headingSm} numberOfLines={1}>{brand?.name ?? 'Cars'}</Text>
-            <Text style={styles.count}>{brandCars.length} car{brandCars.length === 1 ? '' : 's'} available</Text>
+        <View>
+          <View style={[styles.header, { paddingTop: insets.top + spacing.sm }]}>
+            <CircleIconButton icon="arrow-back" onPress={() => navigation.goBack()} accessibilityLabel="Go back" background={colors.surface} />
+            <View style={{ flex: 1, marginLeft: spacing.sm }}>
+              <Text style={typography.headingSm} numberOfLines={1}>{brand?.name ?? 'Cars'}</Text>
+              <Text style={styles.count}>{visibleCars.length} car{visibleCars.length === 1 ? '' : 's'} available</Text>
+            </View>
           </View>
+          {models.length > 0 && (
+            <View style={styles.modelChipRow}>
+              <Chip label="All Models" selected={selectedModelId === null} onPress={() => setSelectedModelId(null)} />
+              {models.map((m) => (
+                <Chip key={m.id} label={m.name} selected={selectedModelId === m.id} onPress={() => setSelectedModelId(m.id)} />
+              ))}
+            </View>
+          )}
         </View>
       }
       renderItem={({ item }) => (
@@ -78,10 +102,18 @@ export const BrandCarsScreen: React.FC<Props> = ({ route, navigation }) => {
         <View>
           <EmptyState
             icon="car-sport-outline"
-            title={`No ${brand?.name ?? 'cars'} available right now`}
-            subtitle="No owner has an active listing for this brand at the moment. Browse all available cars instead."
+            title={selectedModelId ? `No matching ${brand?.name ?? 'cars'} available` : `No ${brand?.name ?? 'cars'} available right now`}
+            subtitle={
+              selectedModelId
+                ? 'No owner has an active listing for this model right now. Try another model or view all cars for this brand.'
+                : 'No owner has an active listing for this brand at the moment. Browse all available cars instead.'
+            }
           />
-          <PrimaryButton label="View All Cars" onPress={onViewAllCars} variant="outline" style={{ marginTop: spacing.sm }} />
+          {selectedModelId ? (
+            <PrimaryButton label="View All Models" onPress={() => setSelectedModelId(null)} variant="outline" style={{ marginTop: spacing.sm }} />
+          ) : (
+            <PrimaryButton label="View All Cars" onPress={onViewAllCars} variant="outline" style={{ marginTop: spacing.sm }} />
+          )}
         </View>
       }
       showsVerticalScrollIndicator={false}
@@ -92,4 +124,5 @@ export const BrandCarsScreen: React.FC<Props> = ({ route, navigation }) => {
 const styles = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'center', paddingBottom: spacing.md },
   count: { ...typography.bodySm, color: colors.textSecondary, marginTop: 2 },
+  modelChipRow: { flexDirection: 'row', flexWrap: 'wrap', paddingBottom: spacing.md },
 });

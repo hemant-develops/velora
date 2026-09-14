@@ -11,9 +11,9 @@ import { FallbackImage } from '../../components/FallbackImage';
 import { BookingDetailsSkeleton } from '../../components/SkeletonLoader';
 import { useAuth } from '../../context/AuthContext';
 import { useCars } from '../../context/CarsContext';
+import { useCatalog } from '../../context/CatalogContext';
 import { useBookings } from '../../context/BookingsContext';
 import { useReviews } from '../../context/ReviewsContext';
-import { brands } from '../../data/brands';
 import { formatCurrency, formatDate, formatShortDate } from '../../utils/format';
 import { BookingStatus, PaymentStatus } from '../../types';
 
@@ -41,6 +41,7 @@ const STATUS_META: Record<BookingStatus, { label: string; color: string; bg: str
 export const BookingDetailsScreen: React.FC<Props> = ({ route, navigation }) => {
   const { user, getUserById } = useAuth();
   const { getCarById } = useCars();
+  const { brands } = useCatalog();
   const { getBookingById, confirmBooking, rejectBooking, cancelBooking, updateStatus, isLoading: bookingsLoading } = useBookings();
   const { hasReviewedBooking, getReviewForBooking } = useReviews();
 

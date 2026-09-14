@@ -11,9 +11,9 @@ import { Chip } from '../../components/Chip';
 import { EmptyState } from '../../components/EmptyState';
 import { HomeSkeleton } from '../../components/SkeletonLoader';
 import { colors, radii, shadows, spacing, typography } from '../../theme';
-import { brands } from '../../data/brands';
 import { useAuth } from '../../context/AuthContext';
 import { useCars } from '../../context/CarsContext';
+import { useCatalog } from '../../context/CatalogContext';
 import { useBookings } from '../../context/BookingsContext';
 import { useNotifications } from '../../context/NotificationsContext';
 import { useAppNavigation, useTabBarClearance } from '../../navigation/hooks';
@@ -45,6 +45,7 @@ export const HomeScreen: React.FC = () => {
   const { user } = useAuth();
   const navigation = useAppNavigation();
   const { cars, isLoaded, searchQuery, setSearchQuery, filteredCars, activeFilterCount, filters } = useCars();
+  const { brands } = useCatalog();
   const { getAvailableQuantity } = useBookings();
   const { getUnreadCountForUser } = useNotifications();
   const [selectedCategory, setSelectedCategory] = useState<CarCategory | null>(null);

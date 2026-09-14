@@ -20,10 +20,45 @@ export interface Brand {
   logo: string;
 }
 
+// PHASE A (Catalog) -- a canonical model row from the new public.car_models
+// table (see supabase/migrations/0001_catalog_foundation.sql). Every field
+// here besides id/brandId/name/isActive/isCustom is a SUGGESTED DEFAULT for
+// the owner listing wizard, never an enforced constraint -- Car's own
+// category/fuelType/transmission/seats below remain the single authoritative
+// value for a given listing, exactly like `year`/`quantity` already work.
+export interface CatalogModel {
+  id: string;
+  brandId: string;
+  name: string; // e.g. "Swift"
+  displayName?: string; // optional variant/trim label, e.g. "Swift VXI"
+  bodyType?: CarCategory;
+  fuelType?: FuelType;
+  transmission?: Transmission;
+  seats?: number;
+  isEv: boolean;
+  isHybrid: boolean;
+  isActive: boolean;
+  // true = an owner submitted this via "Can't find your model? Add
+  // manually" and it hasn't been reviewed by an admin yet (see
+  // OwnerAddCarScreen). A custom model is usable immediately by the owner
+  // who added it (their own listing isn't blocked on review), but stays
+  // invisible to every other owner's Model picker until an admin approves
+  // it (isActive: true) -- see car_models RLS in the migration.
+  isCustom: boolean;
+}
+
 export interface Car {
   id: string;
   name: string;
   brandId: string;
+  // Set only when the owner picked a canonical (or their own pending
+  // custom) catalog entry from the Model picker -- see CatalogModel above.
+  // Optional/undefined for every listing created before this field existed,
+  // and for any listing where the owner just typed a free-text Car Name
+  // without picking a specific model chip. Never required to render or
+  // book a car; it only powers catalog-driven features (model filtering,
+  // seats auto-fill) when present.
+  modelId?: string;
   category: CarCategory;
   images: string[];
   pricePerDay: number;

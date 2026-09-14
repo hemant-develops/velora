@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Alert, Image, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import * as ImagePicker from 'expo-image-picker';
@@ -9,10 +9,9 @@ import { ScreenHeader } from '../../components/ScreenHeader';
 import { InputField } from '../../components/InputField';
 import { Chip } from '../../components/Chip';
 import { PrimaryButton } from '../../components/PrimaryButton';
-import { brands } from '../../data/brands';
-import { getModelsForBrand } from '../../data/carModels';
 import { useAuth } from '../../context/AuthContext';
 import { useCars } from '../../context/CarsContext';
+import { useCatalog } from '../../context/CatalogContext';
 import { generateId } from '../../utils/format';
 import { detectCurrentLocationLabel, requestForegroundPermission } from '../../hooks/useDeviceLocation';
 import { getCarQuantity } from '../../utils/inventory';
@@ -46,6 +45,7 @@ const MAX_PHOTOS = 6;
 export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
   const { user } = useAuth();
   const { addOwnerCar, updateOwnerCar, getCarById } = useCars();
+  const { brands, getModelsForBrand, addManualModel } = useCatalog();
 
   // Edit mode: when opened with a carId (from "Edit Listing" on the owner
   // dashboard), prefill every field from the real, already-persisted car
@@ -59,11 +59,32 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
 
   const [images, setImages] = useState<PickedImage[]>(existingCar?.images.map((uri) => ({ uri })) ?? []);
   const [name, setName] = useState(existingCar?.name ?? '');
-  const [brandId, setBrandId] = useState(existingCar?.brandId ?? brands[0].id);
-  // Model isn't a separate persisted field on Car (name stays one composed
-  // string, e.g. "Maruti Suzuki Swift") — this only drives the cascading
-  // picker below and auto-fills Car Name when a model chip is tapped.
-  const [model, setModel] = useState<string | undefined>(undefined);
+  // PHASE A (Catalog) -- brands now load asynchronously from Supabase (see
+  // CatalogContext), so they may not have arrived on this very first render
+  // yet. Starts blank rather than crashing on brands[0] when the list is
+  // still empty; the effect below picks a sensible default the moment
+  // brands actually load, but only for a brand-new listing -- an
+  // in-progress edit's brandId is never overwritten out from under it.
+  const [brandId, setBrandId] = useState(existingCar?.brandId ?? '');
+  useEffect(() => {
+    if (!isEditMode && !brandId && brands.length > 0) {
+      setBrandId(brands[0].id);
+    }
+  }, [brands, isEditMode, brandId]);
+  // PHASE A (Catalog) -- modelId is the new persisted link to a canonical
+  // (or the owner's own pending custom) public.car_models row -- see
+  // Car.modelId in types/index.ts. `model` stays a plain display string
+  // only (used to compose Car Name and to highlight the selected chip);
+  // it is never itself persisted.
+  const [modelId, setModelId] = useState<string | undefined>(existingCar?.modelId);
+  // "Can't find your model? Add manually" -- collects only the model name
+  // here. Year/fuel/transmission/seats aren't duplicated in a second
+  // mini-form: the manual model is created from whatever the owner has
+  // already entered for THIS listing further down the form, at Save time
+  // (see onSubmit) -- exactly the fields the product spec requires for a
+  // manual catalog submission, with nothing asked twice.
+  const [showManualModelInput, setShowManualModelInput] = useState(false);
+  const [manualModelName, setManualModelName] = useState('');
   const [year, setYear] = useState(existingCar?.year ? String(existingCar.year) : '');
   const [isActive, setIsActive] = useState<boolean>(existingCar?.isActive ?? true);
   const [category, setCategory] = useState<CarCategory>(existingCar?.category ?? 'Sedan');
@@ -88,6 +109,11 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
   const [rentalModes, setRentalModes] = useState<RentalMode[]>(existingCar?.rentalModes ?? ['self_drive', 'with_driver']);
   const [error, setError] = useState<string | undefined>();
   const [saving, setSaving] = useState(false);
+
+  // Only canonical (reviewed) models plus this owner's OWN pending custom
+  // submissions -- car_models RLS already scopes the fetch this way (see
+  // CatalogContext), so no extra filtering is needed here.
+  const catalogModels = getModelsForBrand(brandId);
 
   const onUseCurrentLocationForCar = async () => {
     setDetectingLocation(true);
@@ -203,9 +229,23 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
     if (!user || saving) return;
     if (images.length === 0) return setError('Add at least one photo of the car.');
     if (!name.trim()) return setError('Please enter a car name.');
+    if (!brandId) return setError('Please select a brand.');
     if (!location.trim()) return setError('Enter a pickup location for this car.');
     const price = Number(pricePerDay);
     if (!price || price <= 0) return setError('Enter a valid self-drive price per day.');
+
+    // PHASE A (Catalog) -- manufacturing year is now mandatory with a
+    // sensible server-checked range (see the car_listings_year_range
+    // constraint in supabase/migrations/0001_catalog_foundation.sql), not a
+    // free-form optional string. This validates the same range client-side
+    // purely for a fast, specific error message -- the database constraint
+    // is the actual authority, exactly like every other "never trust the
+    // client" rule elsewhere in this app.
+    const currentYear = new Date().getFullYear();
+    const yearNum = Number(year);
+    if (!year.trim() || !Number.isInteger(yearNum) || yearNum < 1990 || yearNum > currentYear + 1) {
+      return setError(`Enter a valid manufacturing year between 1990 and ${currentYear + 1}.`);
+    }
 
     setError(undefined);
     setSaving(true);
@@ -218,7 +258,6 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
     const driverPrice = Number(driverPricePerDay) || Math.round(price * 1.4);
     const trimmedDescription =
       description.trim() || `A well-maintained ${category.toLowerCase()} ready for your next trip.`;
-    const yearNum = year.trim() && !Number.isNaN(Number(year)) ? Number(year) : undefined;
 
     // MULTI-DEVICE MIGRATION -- addOwnerCar/updateOwnerCar now write to
     // Supabase (previously a synchronous local AsyncStorage write that could
@@ -230,6 +269,31 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
     // already used for validation above, and `saving` always resets via
     // `finally` regardless of outcome.
     try {
+      // PHASE A (Catalog) -- "Can't find your model? Add manually" resolves
+      // here, at Save time, using the year/fuel/transmission/seats the
+      // owner has already filled in above rather than asking for them a
+      // second time. This creates exactly one new car_models row (is_custom:
+      // true, is_active: false -- pending admin review) and the listing
+      // below links to it immediately; car_models RLS is what stops this
+      // from ever creating/editing a canonical, publicly-visible entry.
+      let finalModelId = modelId;
+      if (showManualModelInput && manualModelName.trim()) {
+        const manualResult = await addManualModel({
+          brandId,
+          name: manualModelName.trim(),
+          year: yearNum,
+          fuelType,
+          transmission,
+          seats: seatCount,
+        });
+        if (!manualResult.ok) {
+          setError(manualResult.error);
+          setSaving(false);
+          return;
+        }
+        finalModelId = manualResult.modelId;
+      }
+
       // Upload any newly-picked local photos (file://.../content://...) to
       // real Supabase Storage first -- an already-uploaded https URL (kept
       // from editing an existing listing without touching its photos) is
@@ -246,6 +310,7 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
         await updateOwnerCar(existingCar.id, {
           name: name.trim(),
           brandId,
+          modelId: finalModelId,
           year: yearNum,
           category,
           images: uploadedImages,
@@ -267,6 +332,7 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
           id: generateId('car'),
           name: name.trim(),
           brandId,
+          modelId: finalModelId,
           year: yearNum,
           category,
           images: uploadedImages,
@@ -387,33 +453,84 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
               selected={brandId === b.id}
               onPress={() => {
                 setBrandId(b.id);
-                setModel(undefined);
+                setModelId(undefined);
+                setShowManualModelInput(false);
+                setManualModelName('');
               }}
             />
           ))}
         </View>
 
-        {getModelsForBrand(brandId).length > 0 ? (
-          <>
-            <Text style={styles.label}>Model</Text>
-            <View style={styles.chipRow}>
-              {getModelsForBrand(brandId).map((m) => (
-                <Chip
-                  key={m}
-                  label={m}
-                  selected={model === m}
-                  onPress={() => {
-                    setModel(m);
-                    const brandName = brands.find((b) => b.id === brandId)?.name ?? '';
-                    setName(`${brandName} ${m}`.trim());
-                  }}
-                />
-              ))}
-            </View>
-          </>
+        <Text style={styles.label}>Model</Text>
+        {catalogModels.length > 0 && !showManualModelInput ? (
+          <View style={styles.chipRow}>
+            {catalogModels.map((m) => (
+              <Chip
+                key={m.id}
+                label={m.isCustom ? `${m.name} (pending review)` : m.name}
+                selected={modelId === m.id}
+                onPress={() => {
+                  setModelId(m.id);
+                  const brandName = brands.find((b) => b.id === brandId)?.name ?? '';
+                  setName(`${brandName} ${m.name}`.trim());
+                  // Catalog defaults, all still freely editable further down
+                  // this form -- see CatalogModel's own comment in types.
+                  if (m.bodyType) setCategory(m.bodyType);
+                  if (m.fuelType) setFuelType(m.fuelType);
+                  if (m.transmission) setTransmission(m.transmission);
+                  if (m.seats) setSeats(String(m.seats));
+                }}
+              />
+            ))}
+          </View>
         ) : null}
 
-        <InputField label="Year (optional)" placeholder="e.g. 2023" keyboardType="numeric" value={year} onChangeText={setYear} />
+        {!showManualModelInput ? (
+          <Pressable
+            onPress={() => {
+              setShowManualModelInput(true);
+              setModelId(undefined);
+            }}
+            hitSlop={6}
+            style={{ marginBottom: spacing.md }}
+          >
+            <Text style={styles.addModelLink}>Can&apos;t find your model? Add manually</Text>
+          </Pressable>
+        ) : (
+          <View style={{ marginBottom: spacing.xs }}>
+            <InputField
+              placeholder="e.g. Swift ZXI"
+              value={manualModelName}
+              onChangeText={(text) => {
+                setManualModelName(text);
+                const brandName = brands.find((b) => b.id === brandId)?.name ?? '';
+                setName(`${brandName} ${text}`.trim());
+              }}
+            />
+            <Text style={styles.hint}>
+              This model isn&apos;t in VELORA&apos;s catalog yet — it&apos;ll be added using the year, fuel, transmission and
+              seats you enter below, and reviewed by our team. You can use it for this listing right away.
+            </Text>
+            <Pressable
+              onPress={() => {
+                setShowManualModelInput(false);
+                setManualModelName('');
+              }}
+              hitSlop={6}
+              style={{ marginTop: 4, marginBottom: spacing.md }}
+            >
+              <Text style={styles.addModelLink}>Choose from the list instead</Text>
+            </Pressable>
+          </View>
+        )}
+
+        <InputField
+          label="Manufacturing Year"
+          placeholder={`e.g. ${new Date().getFullYear()}`}
+          keyboardType="numeric"
+          value={year}
+          onChangeText={setYear}
+        />
 
         <Text style={styles.label}>Category</Text>
         <View style={styles.chipRow}>
@@ -557,6 +674,8 @@ const styles = StyleSheet.create({
   photoButtonText: { ...typography.titleMd, color: colors.textPrimary, marginLeft: 8 },
   photoHint: { ...typography.caption, color: colors.textTertiary, marginBottom: spacing.md },
   quantityHint: { ...typography.caption, color: colors.textTertiary, marginTop: -4, marginBottom: spacing.md },
+  addModelLink: { ...typography.bodySm, color: colors.primaryDark, fontWeight: '600', marginBottom: spacing.md },
+  hint: { ...typography.caption, color: colors.textTertiary, marginTop: 4, lineHeight: 16 },
   activeToggleRow: {
     flexDirection: 'row',
     alignItems: 'center',

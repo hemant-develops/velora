@@ -8,8 +8,8 @@ import { CircleIconButton } from '../../components/CircleIconButton';
 import { Chip } from '../../components/Chip';
 import { PrimaryButton } from '../../components/PrimaryButton';
 import { RangeSlider } from '../../components/RangeSlider';
-import { brands } from '../../data/brands';
 import { defaultFilters, useCars } from '../../context/CarsContext';
+import { useCatalog } from '../../context/CatalogContext';
 import { CarCategory, FuelType, RentalMode, Transmission } from '../../types';
 import { formatCurrency } from '../../utils/format';
 
@@ -40,6 +40,7 @@ const SEATS_OPTIONS: (number | 'Any')[] = ['Any', 2, 4, 5, 7];
 export const FilterScreen: React.FC<Props> = ({ navigation }) => {
   const insets = useSafeAreaInsets();
   const { filters, setFilters, cars } = useCars();
+  const { brands } = useCatalog();
   const [local, setLocal] = useState(filters);
 
   // Sensible bounds for the price slider, derived from the actual cars

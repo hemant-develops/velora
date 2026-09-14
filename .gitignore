@@ -10,3 +10,9 @@ ios/
 .idea/
 
 .env
+
+# Separate Next.js project (VELORA Admin Website) -- lives in a subfolder
+# here only because this was the already-connected/permitted folder; it is
+# an independent project (own package.json, own dependencies, its own git
+# history once initialized) and must never be tracked as part of this repo.
+.next/
