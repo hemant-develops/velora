@@ -121,7 +121,7 @@ export const RentalAgreementScreen: React.FC<Props> = ({ route, navigation }) =>
           <Text style={styles.clauseHeading}>1. Parties &amp; Vehicle</Text>
           <Text style={styles.clauseBody}>
             This agreement is between {user.name} ("the Renter") and the owner of {car.name} ("the Owner"), facilitated by
-            VELORA. The vehicle will be rented for {draft.days} day{draft.days === 1 ? '' : 's'}, from{' '}
+            VELORA. The vehicle will be rented for {draft.durationLabel}, from{' '}
             {formatShortDate(draft.pickupDate)} at {draft.pickupTime} to {formatShortDate(draft.dropoffDate)} at{' '}
             {draft.dropoffTime}, picked up and returned at {draft.pickupLocation || car.location}.
           </Text>

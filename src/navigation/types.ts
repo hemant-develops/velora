@@ -24,6 +24,16 @@ export interface BookingDraft {
   pickupTime: string;
   dropoffTime: string;
   days: number;
+  // PHASE 1 -- the renter's actual selected rental duration in hours (e.g.
+  // 24, 48, or a custom value >= 6), plus its display label (e.g. "24
+  // Hours"). `days` above is kept unchanged and still drives the existing
+  // per-day price formula (see utils/duration.ts durationHoursToBillableDays)
+  // -- these two new fields are purely additive, for accurate duration
+  // display on the Agreement screen; they are NOT yet persisted to the
+  // `bookings` table (see supabase/migrations/0002_booking_duration.sql --
+  // optional, not required for this phase to work).
+  durationHours: number;
+  durationLabel: string;
   subtotal: number;
   taxes: number;
   serviceFee: number;

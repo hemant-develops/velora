@@ -11,6 +11,13 @@ export const formatShortDate = (iso: string): string => {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 };
 
+// PHASE 1 -- full AM/PM time display for the new full-clock time picker
+// (see components/TimePickerModal.tsx), replacing the previous fixed
+// 4-option time-slot strings. Always shows AM/PM explicitly, matching the
+// spec's "no confusing 24-hour-only display" requirement.
+export const formatTime12h = (d: Date): string =>
+  d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+
 export const daysBetween = (startIso: string, endIso: string): number => {
   const start = new Date(startIso).setHours(0, 0, 0, 0);
   const end = new Date(endIso).setHours(0, 0, 0, 0);

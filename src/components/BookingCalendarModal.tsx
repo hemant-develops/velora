@@ -11,6 +11,13 @@ interface Props {
   dropoffDate: Date;
   onClose: () => void;
   onApply: (pickup: Date, dropoff: Date) => void;
+  // PHASE 1 -- 'single' picks ONE date (a tap immediately selects it and
+  // enables Apply), used by BookingScreen's new hours-first flow where only
+  // a pickup date is chosen and drop-off is derived from duration. Omitted/
+  // 'range' keeps the exact original two-tap range-selection behavior used
+  // nowhere else today, so no existing call site is affected.
+  mode?: 'range' | 'single';
+  title?: string;
 }
 
 const WEEKDAY_LABELS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
@@ -57,7 +64,15 @@ const formatHeaderDate = (d: Date | null): string =>
 // booking RPC; BookingScreen still owns exactly the same
 // getAvailableQuantity/createBooking contract as before (see its own
 // comments), just fed by this picker instead of the stepper.
-export const BookingCalendarModal: React.FC<Props> = ({ visible, pickupDate, dropoffDate, onClose, onApply }) => {
+export const BookingCalendarModal: React.FC<Props> = ({
+  visible,
+  pickupDate,
+  dropoffDate,
+  onClose,
+  onApply,
+  mode = 'range',
+  title,
+}) => {
   const insets = useSafeAreaInsets();
   const today = useMemo(() => startOfDay(new Date()), []);
 
@@ -85,6 +100,14 @@ export const BookingCalendarModal: React.FC<Props> = ({ visible, pickupDate, dro
 
   const onDayPress = (day: Date) => {
     if (day < today) return; // past dates prevented
+    if (mode === 'single') {
+      // One tap = one date, applied to both pickup/dropoff so the existing
+      // two-Date onApply contract needs no change -- the caller (in single
+      // mode) only ever reads the first Date it gets back.
+      setSelPickup(day);
+      setSelDropoff(day);
+      return;
+    }
     if (!selPickup || selDropoff) {
       // Nothing selected yet, or a full range already exists -- start over.
       setSelPickup(day);
@@ -127,24 +150,33 @@ export const BookingCalendarModal: React.FC<Props> = ({ visible, pickupDate, dro
       <View style={styles.overlay}>
         <View style={[styles.sheet, shadows.lg, { paddingBottom: insets.bottom + spacing.md }]}>
           <View style={styles.headerRow}>
-            <Text style={typography.headingSm}>Select Dates</Text>
+            <Text style={typography.headingSm}>{title ?? (mode === 'single' ? 'Select Date' : 'Select Dates')}</Text>
             <Pressable onPress={onClose} hitSlop={10} accessibilityLabel="Close calendar">
               <Ionicons name="close" size={22} color={colors.textPrimary} />
             </Pressable>
           </View>
 
-          <View style={styles.summaryRow}>
-            <View style={styles.summaryCol}>
-              <Text style={styles.summaryLabel}>Pickup</Text>
-              <Text style={styles.summaryValue} numberOfLines={1}>{formatHeaderDate(selPickup)}</Text>
+          {mode === 'single' ? (
+            <View style={styles.summaryRow}>
+              <View style={styles.summaryCol}>
+                <Text style={styles.summaryLabel}>Date</Text>
+                <Text style={styles.summaryValue} numberOfLines={1}>{formatHeaderDate(selPickup)}</Text>
+              </View>
             </View>
-            <Ionicons name="arrow-forward" size={16} color={colors.textTertiary} />
-            <View style={styles.summaryCol}>
-              <Text style={styles.summaryLabel}>Drop-off</Text>
-              <Text style={styles.summaryValue} numberOfLines={1}>{formatHeaderDate(selDropoff)}</Text>
+          ) : (
+            <View style={styles.summaryRow}>
+              <View style={styles.summaryCol}>
+                <Text style={styles.summaryLabel}>Pickup</Text>
+                <Text style={styles.summaryValue} numberOfLines={1}>{formatHeaderDate(selPickup)}</Text>
+              </View>
+              <Ionicons name="arrow-forward" size={16} color={colors.textTertiary} />
+              <View style={styles.summaryCol}>
+                <Text style={styles.summaryLabel}>Drop-off</Text>
+                <Text style={styles.summaryValue} numberOfLines={1}>{formatHeaderDate(selDropoff)}</Text>
+              </View>
             </View>
-          </View>
-          <Text style={styles.phaseLabel}>{phaseLabel}</Text>
+          )}
+          <Text style={styles.phaseLabel}>{mode === 'single' ? 'Select a date' : phaseLabel}</Text>
 
           <View style={styles.monthNavRow}>
             <Pressable onPress={goPrevMonth} disabled={!canGoPrevMonth} hitSlop={8} style={styles.monthNavBtn}>
