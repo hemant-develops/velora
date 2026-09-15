@@ -12,6 +12,11 @@ interface Props {
   onSelectPreset: (hours: number) => void;
   onSelectCustom: () => void;
   onChangeCustomHours: (hours: number | null) => void;
+  // PHASE 2 -- which presets this specific car actually offers (see
+  // Car.enabledDurationPresets). Defaults to all four so every call site
+  // written before this prop existed (and any car without the field set)
+  // keeps showing exactly the same four chips as Phase 1.
+  presets?: readonly number[];
 }
 
 // 6h / 12h / 24h / 48h / Custom duration chips (spec item 1 + 2). Picking a
@@ -24,13 +29,14 @@ export const DurationSelector: React.FC<Props> = ({
   onSelectPreset,
   onSelectCustom,
   onChangeCustomHours,
+  presets = DURATION_PRESETS_HOURS,
 }) => {
   const customInvalid = selectedPreset === 'custom' && customHours !== null && customHours < MIN_DURATION_HOURS;
 
   return (
     <View>
       <View style={styles.chipRow}>
-        {DURATION_PRESETS_HOURS.map((hours) => (
+        {presets.map((hours) => (
           <Chip
             key={hours}
             label={formatDurationHours(hours)}

@@ -1,0 +1,29 @@
+-- 0007_instant_book.sql
+-- PHASE 6 -- Instant Book vs Request to Book.
+--
+-- *** REQUIRED before using this build's app code (same as 0003/0004). ***
+-- CarsContext.carToRow now unconditionally includes this column -- so run
+-- this BEFORE testing the owner "List a Car" / "Edit Car" screen on this
+-- build, exactly like 0003_duration_pricing_km.sql / 0004_buffer_time.sql.
+--
+-- WHAT THIS DOES
+--   Adds ONE new, NOT NULL column to public.car_listings: instant_book
+--   boolean, defaulting to false. Every existing listing keeps today's
+--   behavior exactly (every new booking on it still starts 'pending' and
+--   needs the owner to Confirm/Reject it -- see BookingsContext.createBooking)
+--   until the owner explicitly turns Instant Book on for that car.
+--
+-- WHAT CHANGES IN THE APP WHEN instant_book IS true FOR A CAR
+--   A new booking on that car is inserted directly as 'upcoming' (skipping
+--   'pending' entirely) and the renter is told it's confirmed immediately,
+--   instead of "sent to the owner". Nothing about the actual availability
+--   gate changes -- create_local_car_booking_hold / get_car_taken_count are
+--   completely untouched; instant_book only decides the STARTING status of
+--   the app-level bookings row (and, right after, syncs that same status
+--   into local_car_inventory_holds via the already-existing
+--   set_local_car_booking_hold_status RPC -- see createBooking's own
+--   comment), never whether a unit is available at all.
+--
+-- Safe to re-run: add-if-not-exists.
+alter table public.car_listings
+  add column if not exists instant_book boolean not null default false;

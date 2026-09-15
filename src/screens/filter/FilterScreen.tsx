@@ -74,6 +74,7 @@ export const FilterScreen: React.FC<Props> = ({ navigation }) => {
       if (local.category !== 'Any' && car.category !== local.category) return false;
       if (local.rentalMode !== 'Any' && !car.rentalModes.includes(local.rentalMode)) return false;
       if (local.seats !== 'Any' && car.seats < local.seats) return false;
+      if (local.instantBookOnly && car.instantBook !== true) return false;
       return true;
     }).length;
   }, [cars, local]);
@@ -163,6 +164,12 @@ export const FilterScreen: React.FC<Props> = ({ navigation }) => {
             label="Available Now"
             selected={local.availableOnly}
             onPress={() => setLocal((f) => ({ ...f, availableOnly: !f.availableOnly }))}
+          />
+          {/* PHASE 7 -- see FilterState.instantBookOnly in types/index.ts. */}
+          <Chip
+            label="Instant Book Only"
+            selected={local.instantBookOnly}
+            onPress={() => setLocal((f) => ({ ...f, instantBookOnly: !f.instantBookOnly }))}
           />
         </View>
       </ScrollView>

@@ -1,0 +1,39 @@
+-- 0005_conversation_archive.sql
+-- PHASE 4 -- Side-Specific Chat Archive.
+--
+-- Unlike 0003/0004, this migration is NOT required for existing chat to
+-- keep working. MessagesContext never includes archived_for_renter/
+-- archived_for_owner in the conversation INSERT it already does when a
+-- fresh thread's first message is sent -- Postgres just applies each
+-- column's own DEFAULT false for any column the client doesn't mention. So
+-- sending/receiving messages, starting a new thread, and the existing chat
+-- unification (one thread per renter+owner pair) all work identically
+-- whether or not this has been run. Run this only when you're ready to
+-- actually use the new Archive / Unarchive action in the Messages tab --
+-- until then, the archive/unarchive calls will fail with a
+-- "column ... does not exist" error, and nothing else is affected.
+--
+-- WHAT THIS DOES
+--   Adds two new NOT NULL boolean columns to public.conversations, each
+--   defaulting to false: archived_for_renter, archived_for_owner. Existing
+--   rows are backfilled to false automatically by Postgres when the column
+--   is added with a default -- nothing needs a separate UPDATE.
+--
+-- WHAT THIS DELIBERATELY DOES NOT DO
+--   - Does NOT touch the existing velora_bump_conversation_on_message
+--     trigger (its exact current definition isn't part of this repo's
+--     tracked migrations -- it was applied directly at some earlier point --
+--     so it is NOT re-created here to avoid guessing its logic wrong and
+--     regressing last_message/unread bumping, which chat and notifications
+--     both depend on). The "a new message un-archives it for the receiving
+--     side" behavior is instead handled by MessagesContext.sendMessage
+--     issuing its own separate, explicit update -- see that file's own
+--     comment.
+--   - Does NOT delete any conversation or message. Archiving only ever
+--     flips one of these two flags; the other party's view, and the full
+--     message history, are completely unaffected either way.
+--
+-- Safe to re-run: add-if-not-exists.
+alter table public.conversations
+  add column if not exists archived_for_renter boolean not null default false,
+  add column if not exists archived_for_owner boolean not null default false;

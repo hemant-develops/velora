@@ -16,3 +16,5 @@ ios/
 # an independent project (own package.json, own dependencies, its own git
 # history once initialized) and must never be tracked as part of this repo.
 .next/
+
+velora-admin/tsconfig.tsbuildinfo

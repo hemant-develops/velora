@@ -44,13 +44,21 @@ export interface SendMessageInput {
 interface MessagesContextValue {
   isLoaded: boolean;
   getConversation: (id: string) => Conversation | undefined;
-  getConversationsForUser: (userId: string, role: UserRole) => Conversation[];
+  // PHASE 4 -- excludes conversations archived for `role` by default; pass
+  // includeArchived: true (see MessagesScreen's Archived view) to get them
+  // back, still scoped to this user.
+  getConversationsForUser: (userId: string, role: UserRole, opts?: { includeArchived?: boolean }) => Conversation[];
   // One thread per (renter, owner) pair, regardless of which car it started
   // about -- see the "CHAT UNIFICATION" note in supabase_migration_multidevice.sql.
   findConversation: (renterId: string, ownerId: string) => Conversation | undefined;
   sendMessage: (input: SendMessageInput) => Promise<Conversation>;
   markRead: (conversationId: string, role: UserRole) => void;
   getUnreadCountForUser: (userId: string, role: UserRole) => number;
+  // PHASE 4 -- soft-archive/unarchive for exactly ONE side (`role`); the
+  // other party's view of this same conversation is completely unaffected.
+  // Never deletes a message or the conversation row itself.
+  archiveConversation: (conversationId: string, role: UserRole) => Promise<void>;
+  unarchiveConversation: (conversationId: string, role: UserRole) => Promise<void>;
   refreshConversations: () => Promise<void>;
 }
 
@@ -71,6 +79,14 @@ interface ConversationRow {
   unread_for_renter: number;
   unread_for_owner: number;
   created_at: string;
+  // PHASE 4 -- see supabase/migrations/0005_conversation_archive.sql. Typed
+  // as plain `boolean` (the DB column is NOT NULL DEFAULT false once that
+  // migration runs), but every read of these two fields in this file still
+  // falls back with `?? false` -- belt-and-suspenders for a row fetched
+  // before that migration exists, where Supabase simply won't return these
+  // keys at all (not `null`, just absent from the object).
+  archived_for_renter: boolean;
+  archived_for_owner: boolean;
 }
 
 interface ChatMessageRow {
@@ -98,6 +114,8 @@ const rowToConversation = (row: ConversationRow, messages: ChatMessage[]): Conve
   lastMessageAt: row.last_message_at,
   unreadForRenter: row.unread_for_renter,
   unreadForOwner: row.unread_for_owner,
+  archivedForRenter: row.archived_for_renter ?? false,
+  archivedForOwner: row.archived_for_owner ?? false,
 });
 
 export const MessagesProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -284,6 +302,8 @@ export const MessagesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           last_message_at: now,
           unread_for_renter: 0,
           unread_for_owner: 0,
+          archived_for_renter: false,
+          archived_for_owner: false,
           created_at: now,
         };
       }
@@ -325,13 +345,38 @@ export const MessagesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     // screen) sees the correct result immediately rather than waiting on
     // the realtime round-trip. The real row is the source of truth once the
     // next fetch (realtime-triggered) lands.
+    // PHASE 4 -- a new message un-archives the thread for whoever is
+    // RECEIVING it (never the sender's own archive state) -- see
+    // Conversation.archivedForRenter/archivedForOwner's own comment for why.
     const updatedRow: ConversationRow = {
       ...finalConvRow,
       last_message: trimmed,
       last_message_at: now,
       unread_for_renter: senderRole === 'owner' ? finalConvRow.unread_for_renter + 1 : 0,
       unread_for_owner: senderRole === 'renter' ? finalConvRow.unread_for_owner + 1 : 0,
+      archived_for_renter: senderRole === 'renter' ? finalConvRow.archived_for_renter : false,
+      archived_for_owner: senderRole === 'owner' ? finalConvRow.archived_for_owner : false,
     };
+
+    // The last_message/last_message_at/unread bump above is predicted
+    // client-side only for instant UI feedback -- the actual write is the
+    // velora_bump_conversation_on_message trigger, unmodified. The archive
+    // reset has no such trigger (and this file deliberately doesn't touch
+    // that trigger, whose exact current definition isn't available to
+    // rewrite safely), so it needs its own explicit update here -- only
+    // fired when there's actually something to clear, and only ever
+    // targets the RECEIVING side's column, mirroring the fire-and-forget
+    // car_id/car_name update just above for a reused thread.
+    const receiverArchivedField = senderRole === 'renter' ? 'archived_for_owner' : 'archived_for_renter';
+    if (finalConvRow[receiverArchivedField]) {
+      supabase
+        .from('conversations')
+        .update({ [receiverArchivedField]: false })
+        .eq('id', finalConvRow.id)
+        .then(({ error }) => {
+          if (error) console.log(`VELORA_CONVERSATION_UNARCHIVE_ON_MESSAGE_ERROR: ${error.message}`);
+        });
+    }
 
     setConversationRows((prev) => {
       const exists = prev.some((c) => c.id === updatedRow.id);
@@ -376,13 +421,29 @@ export const MessagesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       });
   };
 
+  // PHASE 4 -- shared by archiveConversation/unarchiveConversation below.
+  // Updates local state immediately (same optimistic pattern as markRead
+  // just above), then persists to Supabase; a failure here just means the
+  // toggle doesn't stick past a refetch, logged rather than surfaced as a
+  // hard error -- archiving is a convenience, not something worth blocking
+  // the screen over.
+  const setArchived = async (conversationId: string, role: UserRole, archived: boolean): Promise<void> => {
+    const patch = role === 'renter' ? { archived_for_renter: archived } : { archived_for_owner: archived };
+    setConversationRows((prev) => prev.map((c) => (c.id === conversationId ? { ...c, ...patch } : c)));
+    const { error } = await supabase.from('conversations').update(patch).eq('id', conversationId);
+    if (error) {
+      console.log(`VELORA_CONVERSATION_ARCHIVE_ERROR id=${conversationId} role=${role} archived=${archived} message=${error.message}`);
+    }
+  };
+
   const value = useMemo<MessagesContextValue>(
     () => ({
       isLoaded,
       getConversation: (id) => conversations.find((c) => c.id === id),
-      getConversationsForUser: (userId, role) =>
+      getConversationsForUser: (userId, role, opts) =>
         conversations
           .filter((c) => (role === 'renter' ? c.renterId === userId : c.ownerId === userId))
+          .filter((c) => opts?.includeArchived || !(role === 'renter' ? c.archivedForRenter : c.archivedForOwner))
           .sort((a, b) => new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime()),
       findConversation,
       sendMessage,
@@ -391,6 +452,8 @@ export const MessagesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         conversations
           .filter((c) => (role === 'renter' ? c.renterId === userId : c.ownerId === userId))
           .reduce((sum, c) => sum + (role === 'renter' ? c.unreadForRenter : c.unreadForOwner), 0),
+      archiveConversation: (conversationId, role) => setArchived(conversationId, role, true),
+      unarchiveConversation: (conversationId, role) => setArchived(conversationId, role, false),
       refreshConversations: fetchAll,
     }),
     [conversations, isLoaded],

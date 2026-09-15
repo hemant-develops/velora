@@ -21,12 +21,14 @@ import { formatCurrency, formatDate, formatTime12h } from '../../utils/format';
 import { applyOffer } from '../../utils/offers';
 import {
   DEFAULT_DURATION_HOURS,
+  DURATION_PRESETS_HOURS,
   MIN_DURATION_HOURS,
   computeDropoff,
   durationHoursToBillableDays,
   formatDurationHours,
   isValidDurationHours,
 } from '../../utils/duration';
+import { priceForDuration } from '../../utils/pricing';
 import { RentalMode } from '../../types';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Booking'>;
@@ -58,6 +60,15 @@ export const BookingScreen: React.FC<Props> = ({ route, navigation }) => {
 
   const [rentalMode, setRentalMode] = useState<RentalMode>(car?.rentalModes[0] ?? 'self_drive');
 
+  // PHASE 2 -- which duration chips this specific car offers (see
+  // Car.enabledDurationPresets). Falls back to all four presets for any car
+  // without the field set, matching exactly what every car offered in
+  // Phase 1. Cheap to recompute each render -- no hook needed.
+  const enabledPresets: readonly number[] =
+    car?.enabledDurationPresets && car.enabledDurationPresets.length > 0
+      ? car.enabledDurationPresets
+      : DURATION_PRESETS_HOURS;
+
   // PHASE 1 -- hours-first booking duration model. `pickupDateTime` is a
   // single, precise instant (calendar date picker sets the day, the clock
   // picker below sets the hour/minute on that SAME Date object). Drop-off is
@@ -67,7 +78,13 @@ export const BookingScreen: React.FC<Props> = ({ route, navigation }) => {
   // rollover bugs the old "+1 calendar day" stepper was exposed to.
   const today = useMemo(() => new Date(), []);
   const [pickupDateTime, setPickupDateTime] = useState(() => withTime(addDays(today, 1), DEFAULT_PICKUP_HOUR, 0));
-  const [durationPreset, setDurationPreset] = useState<number | 'custom'>(DEFAULT_DURATION_HOURS);
+  // PHASE 2 -- defaults to the standard 24h preset when this car offers it
+  // (unchanged from Phase 1), otherwise falls back to whichever preset the
+  // owner DOES offer, so the initial selection is never a chip that isn't
+  // actually rendered.
+  const [durationPreset, setDurationPreset] = useState<number | 'custom'>(
+    enabledPresets.includes(DEFAULT_DURATION_HOURS) ? DEFAULT_DURATION_HOURS : (enabledPresets[0] ?? DEFAULT_DURATION_HOURS),
+  );
   const [customDurationHours, setCustomDurationHours] = useState<number | null>(null);
   const [datePickerVisible, setDatePickerVisible] = useState(false);
   const [timePickerVisible, setTimePickerVisible] = useState(false);
@@ -154,8 +171,10 @@ export const BookingScreen: React.FC<Props> = ({ route, navigation }) => {
     );
   }
 
-  const activePrice = rentalMode === 'self_drive' ? car.pricePerDay : car.driverPricePerDay;
-  const subtotal = activePrice * days;
+  // PHASE 2 -- real duration-based owner pricing (see utils/pricing.ts).
+  // Falls back to the exact Phase 1 flat-price formula for any car without
+  // owner-set duration pricing, so nothing changes for existing listings.
+  const subtotal = priceForDuration(car, rentalMode, effectiveDurationHours);
   const taxes = Math.round(subtotal * TAX_RATE);
   const promoResult = appliedPromoCode ? applyOffer(appliedPromoCode, subtotal) : undefined;
   const discount = promoResult?.success ? promoResult.discount : 0;
@@ -282,6 +301,7 @@ export const BookingScreen: React.FC<Props> = ({ route, navigation }) => {
           onSelectPreset={(hours) => setDurationPreset(hours)}
           onSelectCustom={() => setDurationPreset('custom')}
           onChangeCustomHours={setCustomDurationHours}
+          presets={enabledPresets}
         />
 
         <View style={[styles.dropoffCard, shadows.sm]}>
@@ -337,6 +357,35 @@ export const BookingScreen: React.FC<Props> = ({ route, navigation }) => {
           </Text>
         </View>
 
+        {/* PHASE 2 -- mileage policy visibility parity: the renter sees the
+            exact same limited/unlimited KM policy the owner configured (or,
+            if unset, the existing 300 km/day default text also shown in the
+            Rental Agreement's Fuel & Mileage clause), before they ever
+            commit to booking. */}
+        <View style={styles.mileageRow}>
+          <Ionicons name="speedometer-outline" size={16} color={colors.textSecondary} />
+          <Text style={styles.mileageText}>
+            {car.mileagePolicy === 'unlimited'
+              ? 'Unlimited KM included'
+              : car.mileagePolicy === 'limited'
+                ? `${car.kmLimitPerDay ?? 300} km/day included${car.extraKmCharge ? ` · ${formatCurrency(car.extraKmCharge)}/km after that` : ''}`
+                : '300 km/day included'}
+          </Text>
+        </View>
+
+        {/* PHASE 6 -- Instant Book. Sets the right expectation before the
+            renter commits: an instant-book car confirms immediately, a
+            regular one still needs the owner's confirmation first (see
+            BookingsContext.createBooking). */}
+        <View style={styles.mileageRow}>
+          <Ionicons name={car.instantBook ? 'flash' : 'time-outline'} size={16} color={car.instantBook ? colors.success : colors.textSecondary} />
+          <Text style={[styles.mileageText, car.instantBook ? { color: colors.success } : undefined]}>
+            {car.instantBook
+              ? 'Instant Book — confirmed immediately, no approval wait'
+              : 'Request to Book — the owner needs to confirm before it’s final'}
+          </Text>
+        </View>
+
         <Text style={styles.sectionTitle}>Promo Code</Text>
         {appliedPromoCode ? (
           <View style={styles.promoAppliedRow}>
@@ -375,9 +424,12 @@ export const BookingScreen: React.FC<Props> = ({ route, navigation }) => {
         <Text style={styles.sectionTitle}>Price Details</Text>
         <View style={styles.summaryCard}>
           <View style={styles.summaryRow}>
-            <Text style={styles.summaryLabel}>
-              {formatCurrency(activePrice)} x {days} day{days === 1 ? '' : 's'}
-            </Text>
+            {/* PHASE 2 -- "activePrice x days" was only ever a correct
+                description of the legacy flat-price formula; with owner-set
+                duration pricing, subtotal no longer decomposes that way, so
+                this now labels the rental by its actual duration instead,
+                which is accurate under either pricing source. */}
+            <Text style={styles.summaryLabel}>Rental price ({durationLabel})</Text>
             <Text style={styles.summaryValue}>{formatCurrency(subtotal)}</Text>
           </View>
           <View style={styles.summaryRow}>
@@ -473,6 +525,16 @@ const styles = StyleSheet.create({
   availabilityText: { ...typography.bodySm, color: colors.success, marginLeft: 6, fontWeight: '600' },
   availabilityTextNone: { color: colors.danger },
   availabilityTextLow: { color: colors.warning },
+  mileageRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderRadius: radii.md,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    marginTop: spacing.sm,
+  },
+  mileageText: { ...typography.bodySm, color: colors.textSecondary, marginLeft: 6, fontWeight: '600' },
   promoRow: { flexDirection: 'row', alignItems: 'flex-start' },
   promoApplyBtn: {
     backgroundColor: colors.onPrimary,

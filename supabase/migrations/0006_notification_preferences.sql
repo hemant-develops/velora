@@ -1,0 +1,51 @@
+-- 0006_notification_preferences.sql
+-- PHASE 5 -- Notification Settings.
+--
+-- Push notifications themselves (permission request, Expo token
+-- registration, the notify()/create_notification pipeline, the send-push
+-- Edge Function) were ALL already built and working before this migration --
+-- see src/utils/pushNotifications.ts, src/context/NotificationsContext.tsx,
+-- src/hooks/useNotificationRouting.ts and supabase/functions/send-push. This
+-- migration adds the one genuinely missing piece: per-user control over
+-- which of those pushes actually reach the phone.
+--
+-- NOT required for existing push/notification behavior to keep working --
+-- exactly like 0005_conversation_archive.sql, this is additive-only. Every
+-- existing user keeps receiving pushes exactly as before (all three columns
+-- default true) until they open the new Notification Settings screen and
+-- explicitly turn something off.
+--
+-- Until this migration is run: the Settings screen's own read/save calls
+-- will fail with a "column does not exist" error, which it catches and
+-- treats as "everything on" (see NotificationSettingsScreen's own comment) --
+-- so it just can't persist a change yet, nothing breaks. send-push's new
+-- preference lookup (below) fails the same way and is caught the same way --
+-- it falls back to "send the push" on any lookup error, so an un-migrated
+-- project's actual push delivery is completely unaffected either way.
+--
+-- WHAT THIS DOES
+--   Adds three NOT NULL boolean columns to public.profiles, each defaulting
+--   to true (i.e. "everything on", matching current behavior for every
+--   existing row -- Postgres backfills them automatically):
+--     push_enabled     -- master switch; false suppresses every push
+--     notify_bookings  -- covers the 'booking_created'/'booking_status'
+--                         notification types
+--     notify_messages  -- covers the 'message' notification type
+--
+-- WHAT THIS DELIBERATELY DOES NOT DO
+--   - Does NOT touch the create_notification RPC or the notifications table.
+--     A muted notification is still created and still shows up in the
+--     in-app Notifications inbox -- muting only stops the OS push banner,
+--     the same "inbox unaffected, banner suppressed" split most apps use.
+--     This also means enforcement lives entirely in send-push (a file this
+--     project fully controls and can read/edit directly) instead of in the
+--     create_notification RPC, whose current definition isn't part of this
+--     repo's tracked migrations -- see 0005's own comment for the identical
+--     reasoning applied to the conversation-bump trigger.
+--   - Does NOT delete or rename any existing profiles column.
+--
+-- Safe to re-run: add-if-not-exists.
+alter table public.profiles
+  add column if not exists push_enabled boolean not null default true,
+  add column if not exists notify_bookings boolean not null default true,
+  add column if not exists notify_messages boolean not null default true;

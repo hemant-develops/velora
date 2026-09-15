@@ -143,7 +143,18 @@ export const RentalAgreementScreen: React.FC<Props> = ({ route, navigation }) =>
           <Text style={styles.clauseHeading}>4. Fuel &amp; Mileage Policy</Text>
           <Text style={styles.clauseBody}>
             The vehicle will be provided with a full tank and must be returned with a full tank, or a refuelling charge
-            will apply. Standard usage is expected; excessive mileage beyond 300 km/day may incur additional charges.
+            will apply.{' '}
+            {/* PHASE 2 -- reads the owner's real mileagePolicy when they've
+                set one, otherwise falls back to the exact same hardcoded
+                300 km/day language this clause always showed, so a listing
+                that hasn't configured this yet reads identically to before. */}
+            {car.mileagePolicy === 'unlimited'
+              ? 'This rental includes unlimited kilometers with no mileage charges.'
+              : car.mileagePolicy === 'limited'
+                ? `Standard usage is expected; mileage beyond ${car.kmLimitPerDay ?? 300} km/day${
+                    car.extraKmCharge ? ` incurs a ${formatCurrency(car.extraKmCharge)}/km additional charge` : ' may incur additional charges'
+                  }.`
+                : 'Standard usage is expected; excessive mileage beyond 300 km/day may incur additional charges.'}
           </Text>
 
           <Text style={styles.clauseHeading}>5. Late Return &amp; Cancellation</Text>

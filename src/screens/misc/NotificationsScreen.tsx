@@ -63,11 +63,16 @@ export const NotificationsScreen: React.FC<Props> = ({ navigation }) => {
         title="Notifications"
         onBack={() => navigation.goBack()}
         right={
-          unreadCount > 0 ? (
-            <Pressable onPress={() => markAllReadForUser(user.id)} hitSlop={8} accessibilityLabel="Mark all as read">
-              <Ionicons name="checkmark-done" size={22} color={colors.primaryDark} />
+          <View style={styles.headerActions}>
+            {unreadCount > 0 ? (
+              <Pressable onPress={() => markAllReadForUser(user.id)} hitSlop={8} accessibilityLabel="Mark all as read">
+                <Ionicons name="checkmark-done" size={22} color={colors.primaryDark} />
+              </Pressable>
+            ) : null}
+            <Pressable onPress={() => navigation.navigate('NotificationSettings')} hitSlop={8} accessibilityLabel="Notification settings">
+              <Ionicons name="settings-outline" size={20} color={colors.textSecondary} />
             </Pressable>
-          ) : undefined
+          </View>
         }
       />
 
@@ -110,6 +115,7 @@ export const NotificationsScreen: React.FC<Props> = ({ navigation }) => {
 };
 
 const styles = StyleSheet.create({
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   row: { flexDirection: 'row', alignItems: 'flex-start', paddingVertical: spacing.sm },
   iconCircle: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.surface, alignItems: 'center', justifyContent: 'center' },
   iconCircleUnread: { backgroundColor: colors.onPrimary },

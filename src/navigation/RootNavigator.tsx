@@ -12,8 +12,10 @@ import { FilterScreen } from '../screens/filter/FilterScreen';
 import { EditProfileScreen } from '../screens/profile/EditProfileScreen';
 import { ConversationDetailScreen } from '../screens/messages/ConversationDetailScreen';
 import { OwnerAddCarScreen } from '../screens/owner/OwnerAddCarScreen';
+import { OwnerCarCalendarScreen } from '../screens/owner/OwnerCarCalendarScreen';
 import { FavoritesScreen } from '../screens/favorites/FavoritesScreen';
 import { NotificationsScreen } from '../screens/misc/NotificationsScreen';
+import { NotificationSettingsScreen } from '../screens/misc/NotificationSettingsScreen';
 import { PaymentMethodsScreen } from '../screens/misc/PaymentMethodsScreen';
 import { HelpSupportScreen } from '../screens/misc/HelpSupportScreen';
 import { LegalScreen } from '../screens/misc/LegalScreen';
@@ -44,12 +46,14 @@ export const RootNavigator: React.FC = () => (
     <Stack.Screen name="Favorites" component={FavoritesScreen} />
     <Stack.Screen name="ConversationDetail" component={ConversationDetailScreen} />
     <Stack.Screen name="OwnerAddCar" component={OwnerAddCarScreen} options={{ presentation: 'modal' }} />
+    <Stack.Screen name="OwnerCarCalendar" component={OwnerCarCalendarScreen} />
     <Stack.Screen name="OwnerVerification" component={OwnerVerificationScreen} options={{ presentation: 'modal' }} />
     <Stack.Screen name="OwnerProfile" component={OwnerPublicProfileScreen} />
     <Stack.Screen name="CustomerProfile" component={CustomerProfileScreen} />
     <Stack.Screen name="BookingDetails" component={BookingDetailsScreen} />
     <Stack.Screen name="LocationPicker" component={LocationPickerScreen} options={{ presentation: 'modal' }} />
     <Stack.Screen name="Notifications" component={NotificationsScreen} />
+    <Stack.Screen name="NotificationSettings" component={NotificationSettingsScreen} />
     <Stack.Screen name="PaymentMethods" component={PaymentMethodsScreen} />
     <Stack.Screen name="HelpSupport" component={HelpSupportScreen} />
     <Stack.Screen name="Legal" component={LegalScreen} />

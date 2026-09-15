@@ -27,6 +27,7 @@ export const defaultFilters: FilterState = {
   rentalMode: 'Any',
   seats: 'Any',
   availableOnly: false,
+  instantBookOnly: false,
 };
 
 interface CarsContextValue {
@@ -86,6 +87,22 @@ interface CarRow {
   is_active: boolean;
   quantity: number;
   created_at: string;
+  // PHASE 2 -- see supabase/migrations/0003_duration_pricing_km.sql. All
+  // nullable; a row from before this migration/feature simply has null in
+  // every one of these, which rowToCar below maps to `undefined`.
+  duration_hourly_rate: number | null;
+  duration_price_6h: number | null;
+  duration_price_12h: number | null;
+  duration_price_24h: number | null;
+  duration_price_48h: number | null;
+  enabled_duration_presets: number[] | null;
+  mileage_policy: string | null;
+  km_limit_per_day: number | null;
+  extra_km_charge: number | null;
+  // PHASE 3 -- see supabase/migrations/0004_buffer_time.sql.
+  buffer_hours: number | null;
+  // PHASE 6 -- see supabase/migrations/0007_instant_book.sql.
+  instant_book: boolean;
 }
 
 const rowToCar = (row: CarRow): Car => ({
@@ -114,6 +131,25 @@ const rowToCar = (row: CarRow): Car => ({
   isActive: row.is_active,
   quantity: row.quantity,
   createdAt: row.created_at,
+  // PHASE 2 -- durationPricing only exists when the owner has actually set
+  // an hourly rate; the four preset prices are each independently optional
+  // within it (see DurationPricingTable in types/index.ts).
+  durationPricing:
+    row.duration_hourly_rate != null
+      ? {
+          hourlyRate: row.duration_hourly_rate,
+          price6h: row.duration_price_6h ?? undefined,
+          price12h: row.duration_price_12h ?? undefined,
+          price24h: row.duration_price_24h ?? undefined,
+          price48h: row.duration_price_48h ?? undefined,
+        }
+      : undefined,
+  enabledDurationPresets: row.enabled_duration_presets ?? undefined,
+  mileagePolicy: (row.mileage_policy ?? undefined) as Car['mileagePolicy'],
+  kmLimitPerDay: row.km_limit_per_day ?? undefined,
+  extraKmCharge: row.extra_km_charge ?? undefined,
+  bufferHours: row.buffer_hours ?? undefined,
+  instantBook: row.instant_book,
 });
 
 // PRODUCTION-AUDIT FIX -- every one of these columns is a Postgres `integer`
@@ -153,6 +189,31 @@ const carToRow = (car: Car) => ({
   year: car.year != null ? Math.round(car.year) : null,
   is_active: car.isActive !== false,
   quantity: Math.round(getCarQuantity(car)),
+  // PHASE 2 -- see supabase/migrations/0003_duration_pricing_km.sql. These
+  // nine columns are ALWAYS included (null when unset), the same pattern
+  // this file already uses for model_id/year/discount_percent above -- so,
+  // exactly like those fields when 0001_catalog_foundation.sql shipped,
+  // migration 0003 must be run BEFORE this build's Save/Publish will work
+  // for ANY car, not only ones using duration pricing or a KM policy.
+  duration_hourly_rate: car.durationPricing?.hourlyRate != null ? Math.round(car.durationPricing.hourlyRate) : null,
+  duration_price_6h: car.durationPricing?.price6h != null ? Math.round(car.durationPricing.price6h) : null,
+  duration_price_12h: car.durationPricing?.price12h != null ? Math.round(car.durationPricing.price12h) : null,
+  duration_price_24h: car.durationPricing?.price24h != null ? Math.round(car.durationPricing.price24h) : null,
+  duration_price_48h: car.durationPricing?.price48h != null ? Math.round(car.durationPricing.price48h) : null,
+  enabled_duration_presets:
+    car.enabledDurationPresets && car.enabledDurationPresets.length > 0 ? car.enabledDurationPresets : null,
+  mileage_policy: car.mileagePolicy ?? null,
+  km_limit_per_day: car.kmLimitPerDay != null ? Math.round(car.kmLimitPerDay) : null,
+  extra_km_charge: car.extraKmCharge != null ? Math.round(car.extraKmCharge) : null,
+  // PHASE 3 -- see supabase/migrations/0004_buffer_time.sql. Same
+  // always-include (null when unset) pattern as the Phase 2 columns above --
+  // migration 0004 must be run before ANY car save works, exactly like 0003.
+  buffer_hours: car.bufferHours != null ? Math.round(car.bufferHours) : null,
+  // PHASE 6 -- see supabase/migrations/0007_instant_book.sql. Same
+  // always-include pattern as buffer_hours above (NOT NULL column, so this
+  // one is a plain boolean rather than null-when-unset) -- migration 0007
+  // must be run before ANY car save works, exactly like 0003/0004.
+  instant_book: car.instantBook === true,
 });
 
 export const CarsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -326,6 +387,10 @@ export const CarsProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (filters.category !== 'Any' && car.category !== filters.category) return false;
       if (filters.rentalMode !== 'Any' && !car.rentalModes.includes(filters.rentalMode)) return false;
       if (filters.seats !== 'Any' && car.seats < filters.seats) return false;
+      // PHASE 7 -- Instant Book filter. Answerable directly from
+      // Car.instantBook (Phase 6), so unlike availableOnly (see FilterState's
+      // own comment) this one belongs right here, not deferred to HomeScreen.
+      if (filters.instantBookOnly && car.instantBook !== true) return false;
       return true;
     });
   }, [activeCars, searchQuery, filters]);
@@ -340,6 +405,7 @@ export const CarsProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (filters.rentalMode !== 'Any') count += 1;
     if (filters.seats !== 'Any') count += 1;
     if (filters.availableOnly) count += 1;
+    if (filters.instantBookOnly) count += 1;
     return count;
   }, [filters]);
 

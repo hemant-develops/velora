@@ -76,6 +76,33 @@ Deno.serve(async (req: Request) => {
       return new Response(JSON.stringify({ skipped: 'no push token for user' }), { status: 200 });
     }
 
+    // PHASE 5 -- Notification Settings (see 0006_notification_preferences.sql).
+    // The muted notification row still exists and still shows up in the
+    // in-app Notifications inbox -- this only decides whether to also buzz
+    // the phone. Swallowing any lookup error (instead of failing the
+    // request) means an un-migrated project (no push_enabled/notify_bookings/
+    // notify_messages columns yet) just skips this check and falls through
+    // to "send the push", exactly like before this migration existed --
+    // same fail-open shape already used for the token lookup above.
+    const notificationType = record?.type as string | undefined;
+    const { data: prefsRow } = await admin
+      .from('profiles')
+      .select('push_enabled, notify_bookings, notify_messages')
+      .eq('id', userId)
+      .maybeSingle();
+    if (prefsRow) {
+      const bookingTypes = ['booking_created', 'booking_status'];
+      const categoryEnabled =
+        notificationType === 'message'
+          ? prefsRow.notify_messages !== false
+          : bookingTypes.includes(notificationType ?? '')
+            ? prefsRow.notify_bookings !== false
+            : true; // an unrecognized/future type is never silently muted
+      if (prefsRow.push_enabled === false || !categoryEnabled) {
+        return new Response(JSON.stringify({ skipped: 'muted by notification preferences' }), { status: 200 });
+      }
+    }
+
     const expoResponse = await fetch(EXPO_PUSH_URL, {
       method: 'POST',
       headers: { 'content-type': 'application/json', accept: 'application/json' },

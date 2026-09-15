@@ -5,6 +5,7 @@ import { Booking, BookingStatus, PaymentStatus, RentalMode } from '../types';
 import { formatCurrency, formatShortDate, generateBookingId } from '../utils/format';
 import { dateRangesOverlap, toLocalDateOnly } from '../utils/dateRange';
 import { getCarQuantity } from '../utils/inventory';
+import { findBlockedDateInRange } from '../utils/blockedDates';
 import { supabase } from '../lib/supabase';
 import { useAuth } from './AuthContext';
 import { useCars } from './CarsContext';
@@ -344,6 +345,20 @@ export const BookingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       throw new Error('Drop-off date cannot be before pickup date.');
     }
 
+    // PHASE 6 -- Block Car. An ADVISORY gate on top of the real
+    // create_local_car_booking_hold RPC below, not a replacement for it --
+    // see src/utils/blockedDates.ts and 0008_car_blocked_dates.sql for why a
+    // lookup error here fails OPEN (never blocks a legitimate booking over a
+    // transient network hiccup) rather than failing closed.
+    const blockedCheck = await findBlockedDateInRange(
+      input.carId,
+      toLocalDateOnly(input.pickupDate),
+      toLocalDateOnly(input.dropoffDate),
+    );
+    if (blockedCheck.blocked) {
+      throw new Error('These dates are blocked by the owner and unavailable for booking.');
+    }
+
     const bookingId = generateBookingId();
 
     // --- UNCHANGED: the exact same atomic availability gate as before. ---
@@ -372,11 +387,14 @@ export const BookingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     const { renterName, renterAvatar, ...rest } = input;
 
-    // Every new booking starts 'pending' — it only becomes a real,
-    // confirmed reservation once the owner explicitly accepts it. Insert
-    // into the shared table -- owner_id is filled in server-side by the
-    // velora_set_booking_owner_id trigger from car_listings, so the client
-    // never sends (or can spoof) it.
+    // PHASE 6 -- Instant Book. undefined/false (the default) keeps every
+    // booking starting 'pending', unchanged from Phase 1-5 -- it only
+    // becomes a real, confirmed reservation once the owner explicitly
+    // accepts it. `car.instantBook === true` skips straight to 'upcoming'.
+    // Insert into the shared table -- owner_id is filled in server-side by
+    // the velora_set_booking_owner_id trigger from car_listings, so the
+    // client never sends (or can spoof) it.
+    const initialStatus: BookingStatus = car.instantBook === true ? 'upcoming' : 'pending';
     const { data, error: insertError } = await supabase
       .from('bookings')
       .insert({
@@ -398,7 +416,7 @@ export const BookingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         service_fee: rest.serviceFee,
         total: rest.total,
         payment_method: rest.paymentMethod,
-        status: 'pending',
+        status: initialStatus,
         agreement_signed_by: rest.agreementSignedBy,
         agreement_signed_at: rest.agreementSignedAt,
       })
@@ -422,21 +440,54 @@ export const BookingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     console.log(`VELORA_BOOKING_PERSISTED id=${booking.id} car=${booking.carId} renter=${booking.renterId} status=${booking.status}`);
     notifyNewBooking();
 
+    // PHASE 6 -- Instant Book, continued. create_local_car_booking_hold
+    // above creates the underlying inventory hold at its own default
+    // status; every OTHER status change in this file immediately syncs that
+    // hold via set_local_car_booking_hold_status (see applyStatus below) so
+    // the two never drift -- this is the same sync, done once here for the
+    // one status a booking can now start at besides 'pending'.
+    if (initialStatus === 'upcoming') {
+      const { error: syncError } = await supabase.rpc('set_local_car_booking_hold_status', {
+        p_booking_id: bookingId,
+        p_status: 'upcoming',
+      });
+      if (syncError) {
+        console.log(`VELORA_INSTANT_BOOK_HOLD_SYNC_ERROR booking=${bookingId} message=${syncError.message}`);
+      }
+    }
+
     const carLabel = car.name;
-    await notify({
-      userId: car.ownerId,
-      type: 'booking_created',
-      title: 'New booking request',
-      message: `${renterName} requested to book your ${carLabel} · ${formatCurrency(input.total)} · ${formatShortDate(input.pickupDate)} - ${formatShortDate(input.dropoffDate)}.`,
-      target: { kind: 'booking', id: booking.id },
-    });
-    await notify({
-      userId: input.renterId,
-      type: 'booking_created',
-      title: 'Booking request sent',
-      message: `Your request for ${carLabel} has been sent to the owner. You'll be notified once it's confirmed.`,
-      target: { kind: 'booking', id: booking.id },
-    });
+    if (initialStatus === 'upcoming') {
+      await notify({
+        userId: car.ownerId,
+        type: 'booking_created',
+        title: 'New instant booking',
+        message: `${renterName} instantly booked your ${carLabel} · ${formatCurrency(input.total)} · ${formatShortDate(input.pickupDate)} - ${formatShortDate(input.dropoffDate)}.`,
+        target: { kind: 'booking', id: booking.id },
+      });
+      await notify({
+        userId: input.renterId,
+        type: 'booking_created',
+        title: 'Booking confirmed',
+        message: `Your booking for ${carLabel} is confirmed — this car accepts Instant Book, so no approval wait was needed.`,
+        target: { kind: 'booking', id: booking.id },
+      });
+    } else {
+      await notify({
+        userId: car.ownerId,
+        type: 'booking_created',
+        title: 'New booking request',
+        message: `${renterName} requested to book your ${carLabel} · ${formatCurrency(input.total)} · ${formatShortDate(input.pickupDate)} - ${formatShortDate(input.dropoffDate)}.`,
+        target: { kind: 'booking', id: booking.id },
+      });
+      await notify({
+        userId: input.renterId,
+        type: 'booking_created',
+        title: 'Booking request sent',
+        message: `Your request for ${carLabel} has been sent to the owner. You'll be notified once it's confirmed.`,
+        target: { kind: 'booking', id: booking.id },
+      });
+    }
 
     return booking;
   };

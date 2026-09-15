@@ -17,7 +17,8 @@ import { detectCurrentLocationLabel, requestForegroundPermission } from '../../h
 import { getCarQuantity } from '../../utils/inventory';
 import { showToast } from '../../utils/toast';
 import { isStaleLocalFileMessage, PickedImage, readUriAsBlobWithRetry, uploadCarImages } from '../../utils/uploadImage';
-import { Car, CarCategory, FuelType, RentalMode, Transmission } from '../../types';
+import { DURATION_PRESETS_HOURS, formatDurationHours } from '../../utils/duration';
+import { Car, CarCategory, FuelType, MileagePolicy, RentalMode, Transmission } from '../../types';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'OwnerAddCar'>;
 
@@ -107,6 +108,39 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
   const [detectingLocation, setDetectingLocation] = useState(false);
   const [description, setDescription] = useState(existingCar?.description ?? '');
   const [rentalModes, setRentalModes] = useState<RentalMode[]>(existingCar?.rentalModes ?? ['self_drive', 'with_driver']);
+  // PHASE 2 -- which duration presets this listing offers. Defaults to all
+  // four for a brand-new listing and for any existing car that predates
+  // this field, matching what every car already offered in Phase 1.
+  const [enabledPresets, setEnabledPresets] = useState<number[]>(
+    existingCar?.enabledDurationPresets && existingCar.enabledDurationPresets.length > 0
+      ? existingCar.enabledDurationPresets
+      : [...DURATION_PRESETS_HOURS],
+  );
+  // PHASE 2 -- owner duration-based pricing, off by default (every car keeps
+  // pricing via the flat Self Drive Price per Day formula unless the owner
+  // explicitly turns this on).
+  const [useDurationPricing, setUseDurationPricing] = useState<boolean>(!!existingCar?.durationPricing);
+  const [hourlyRate, setHourlyRate] = useState(
+    existingCar?.durationPricing?.hourlyRate ? String(existingCar.durationPricing.hourlyRate) : '',
+  );
+  const [price6h, setPrice6h] = useState(existingCar?.durationPricing?.price6h ? String(existingCar.durationPricing.price6h) : '');
+  const [price12h, setPrice12h] = useState(existingCar?.durationPricing?.price12h ? String(existingCar.durationPricing.price12h) : '');
+  const [price24h, setPrice24h] = useState(existingCar?.durationPricing?.price24h ? String(existingCar.durationPricing.price24h) : '');
+  const [price48h, setPrice48h] = useState(existingCar?.durationPricing?.price48h ? String(existingCar.durationPricing.price48h) : '');
+  // PHASE 2 -- mileage / KM policy. Defaults to 'limited' at the existing
+  // 300 km/day the app already quoted in the Rental Agreement before this
+  // field existed, so a brand-new listing's agreement text matches a
+  // pre-Phase-2 listing's unless the owner actually changes it.
+  const [mileagePolicy, setMileagePolicy] = useState<MileagePolicy>(existingCar?.mileagePolicy ?? 'limited');
+  const [kmLimitPerDay, setKmLimitPerDay] = useState(existingCar?.kmLimitPerDay ? String(existingCar.kmLimitPerDay) : '300');
+  const [extraKmCharge, setExtraKmCharge] = useState(existingCar?.extraKmCharge ? String(existingCar.extraKmCharge) : '');
+  // PHASE 3 -- informational-only turnaround time between bookings (see
+  // Car.bufferHours in types/index.ts for why this isn't enforced).
+  const [bufferHours, setBufferHours] = useState(existingCar?.bufferHours ? String(existingCar.bufferHours) : '');
+  // PHASE 6 -- Instant Book vs Request to Book. Defaults to false (Request
+  // to Book) for a brand-new listing, matching every listing that existed
+  // before this feature -- see Car.instantBook in types/index.ts.
+  const [instantBook, setInstantBook] = useState(existingCar?.instantBook === true);
   const [error, setError] = useState<string | undefined>();
   const [saving, setSaving] = useState(false);
 
@@ -141,6 +175,16 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
         return next.length > 0 ? next : prev; // at least one mode required
       }
       return [...prev, mode];
+    });
+  };
+
+  const toggleDurationPreset = (hours: number) => {
+    setEnabledPresets((prev) => {
+      if (prev.includes(hours)) {
+        const next = prev.filter((h) => h !== hours);
+        return next.length > 0 ? next : prev; // at least one duration required
+      }
+      return [...prev, hours].sort((a, b) => a - b);
     });
   };
 
@@ -247,6 +291,37 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
       return setError(`Enter a valid manufacturing year between 1990 and ${currentYear + 1}.`);
     }
 
+    // PHASE 2 -- Duration-Based Pricing. hourlyRate is required the moment
+    // this toggle is on since it's the fallback for Custom AND for any
+    // preset the owner leaves blank below -- everything else stays optional.
+    let durationPricingFinal: Car['durationPricing'];
+    if (useDurationPricing) {
+      const hourly = Number(hourlyRate);
+      if (!hourly || hourly <= 0) return setError('Enter a valid hourly rate for duration pricing.');
+      durationPricingFinal = {
+        hourlyRate: hourly,
+        price6h: Number(price6h) > 0 ? Number(price6h) : undefined,
+        price12h: Number(price12h) > 0 ? Number(price12h) : undefined,
+        price24h: Number(price24h) > 0 ? Number(price24h) : undefined,
+        price48h: Number(price48h) > 0 ? Number(price48h) : undefined,
+      };
+    }
+
+    // PHASE 2 -- Mileage / KM Policy. A limit is required for 'limited';
+    // extraKmCharge stays optional (blank means no extra charge is levied
+    // for now -- see the migration's own note on why usage isn't metered).
+    let kmLimitFinal: number | undefined;
+    let extraKmFinal: number | undefined;
+    if (mileagePolicy === 'limited') {
+      const limit = Number(kmLimitPerDay);
+      if (!limit || limit <= 0) return setError('Enter a valid daily KM limit.');
+      kmLimitFinal = limit;
+      extraKmFinal = Number(extraKmCharge) > 0 ? Number(extraKmCharge) : undefined;
+    }
+
+    // PHASE 3 -- Buffer Time. Optional; invalid/blank just means "not set".
+    const bufferHoursFinal = Number(bufferHours) > 0 ? Number(bufferHours) : undefined;
+
     setError(undefined);
     setSaving(true);
 
@@ -326,6 +401,13 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
           description: trimmedDescription,
           isActive,
           quantity: quantityCount,
+          enabledDurationPresets: enabledPresets,
+          durationPricing: durationPricingFinal,
+          mileagePolicy,
+          kmLimitPerDay: kmLimitFinal,
+          extraKmCharge: extraKmFinal,
+          bufferHours: bufferHoursFinal,
+          instantBook,
         });
       } else {
         const newCar: Car = {
@@ -352,6 +434,13 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
           description: trimmedDescription,
           isActive,
           quantity: quantityCount,
+          enabledDurationPresets: enabledPresets,
+          durationPricing: durationPricingFinal,
+          mileagePolicy,
+          kmLimitPerDay: kmLimitFinal,
+          extraKmCharge: extraKmFinal,
+          bufferHours: bufferHoursFinal,
+          instantBook,
           // Set once, here, at real creation time only -- never touched by
           // the edit branch above, so "Newest" sort reflects when a listing
           // was first published, not when it was last edited.
@@ -591,6 +680,98 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
         <Text style={styles.quantityHint}>
           List multiple identical units (e.g. 3 Swifts) as one listing instead of creating separate listings for each.
         </Text>
+
+        <Text style={styles.label}>Duration Options Offered</Text>
+        <View style={styles.chipRow}>
+          {DURATION_PRESETS_HOURS.map((h) => (
+            <Chip key={h} label={formatDurationHours(h)} selected={enabledPresets.includes(h)} onPress={() => toggleDurationPreset(h)} />
+          ))}
+        </View>
+        <Text style={styles.hint}>
+          Renters can only choose from the durations selected here (plus Custom, which is always available).
+        </Text>
+
+        <View style={styles.activeToggleRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.label}>Duration-Based Pricing</Text>
+            <Text style={styles.activeToggleCaption}>
+              {useDurationPricing
+                ? 'Set a specific price for each duration below'
+                : 'Off — price is calculated from Self Drive Price per Day'}
+            </Text>
+          </View>
+          <Switch
+            value={useDurationPricing}
+            onValueChange={setUseDurationPricing}
+            trackColor={{ true: colors.primary, false: colors.border }}
+            thumbColor={colors.white}
+          />
+        </View>
+        {useDurationPricing ? (
+          <>
+            <InputField
+              label="Hourly Rate (₹, for Custom duration)"
+              placeholder="e.g. 120"
+              keyboardType="numeric"
+              value={hourlyRate}
+              onChangeText={setHourlyRate}
+            />
+            <InputField label="Price for 6 Hours (₹, optional)" placeholder="e.g. 800" keyboardType="numeric" value={price6h} onChangeText={setPrice6h} />
+            <InputField label="Price for 12 Hours (₹, optional)" placeholder="e.g. 1500" keyboardType="numeric" value={price12h} onChangeText={setPrice12h} />
+            <InputField label="Price for 24 Hours (₹, optional)" placeholder="e.g. 2500" keyboardType="numeric" value={price24h} onChangeText={setPrice24h} />
+            <InputField label="Price for 48 Hours (₹, optional)" placeholder="e.g. 4500" keyboardType="numeric" value={price48h} onChangeText={setPrice48h} />
+            <Text style={styles.hint}>Leave a duration blank to price it automatically from the Hourly Rate instead.</Text>
+          </>
+        ) : null}
+
+        <Text style={styles.label}>Mileage Policy</Text>
+        <View style={styles.chipRow}>
+          <Chip label="Limited" selected={mileagePolicy === 'limited'} onPress={() => setMileagePolicy('limited')} />
+          <Chip label="Unlimited" selected={mileagePolicy === 'unlimited'} onPress={() => setMileagePolicy('unlimited')} />
+        </View>
+        {mileagePolicy === 'limited' ? (
+          <>
+            <InputField label="KM Limit per Day" placeholder="e.g. 300" keyboardType="numeric" value={kmLimitPerDay} onChangeText={setKmLimitPerDay} />
+            <InputField
+              label="Extra KM Charge (₹/km, optional)"
+              placeholder="e.g. 10"
+              keyboardType="numeric"
+              value={extraKmCharge}
+              onChangeText={setExtraKmCharge}
+            />
+          </>
+        ) : (
+          <Text style={styles.hint}>Renters can drive unlimited kilometers with no extra mileage charges.</Text>
+        )}
+
+        <InputField
+          label="Buffer Time Between Bookings (hours, optional)"
+          placeholder="e.g. 2"
+          keyboardType="numeric"
+          value={bufferHours}
+          onChangeText={setBufferHours}
+        />
+        <Text style={styles.hint}>
+          For your own reference (cleaning/prep time) — shown on your dashboard and car calendar, not enforced
+          automatically.
+        </Text>
+
+        <View style={styles.activeToggleRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.label}>Instant Book</Text>
+            <Text style={styles.activeToggleCaption}>
+              {instantBook
+                ? 'On — a new booking is confirmed immediately, no approval needed'
+                : 'Off — Request to Book: you confirm or decline each booking'}
+            </Text>
+          </View>
+          <Switch
+            value={instantBook}
+            onValueChange={setInstantBook}
+            trackColor={{ true: colors.primary, false: colors.border }}
+            thumbColor={colors.white}
+          />
+        </View>
 
         <View style={styles.locationLabelRow}>
           <Text style={styles.label}>Pickup Location</Text>

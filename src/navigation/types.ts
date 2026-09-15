@@ -85,6 +85,10 @@ export type RootStackParamList = {
   };
   OwnerAddCar: { carId?: string } | undefined;
   OwnerBookingRequests: undefined;
+  // PHASE 3 -- read-only calendar for one of the owner's own cars, showing
+  // which dates already have a pending/upcoming/active booking (see
+  // OwnerCarCalendarScreen).
+  OwnerCarCalendar: { carId: string };
   OwnerVerification: undefined;
   OwnerProfile: { ownerId: string; carId?: string; carName?: string };
   // A pushed, dedicated screen for "Home -> tap a brand" (see BrandCarsScreen
@@ -94,6 +98,8 @@ export type RootStackParamList = {
   BookingDetails: { bookingId: string };
   LocationPicker: undefined;
   Notifications: undefined;
+  // PHASE 5 -- per-category push mute (see NotificationSettingsScreen).
+  NotificationSettings: undefined;
   PaymentMethods: undefined;
   HelpSupport: undefined;
   Legal: { kind: 'privacy' | 'terms' };

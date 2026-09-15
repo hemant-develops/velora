@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Alert, FlatList, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
+import { Alert, FlatList, Pressable, Share, StyleSheet, Switch, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -16,6 +16,8 @@ import { formatCurrency, formatShortDate } from '../../utils/format';
 import { dateRangesOverlap } from '../../utils/dateRange';
 import { getCarQuantity } from '../../utils/inventory';
 import { showToast } from '../../utils/toast';
+import { formatResponseCountdown, isResponseOverdue } from '../../utils/bookingCountdown';
+import { rowsToCsv } from '../../utils/csv';
 import { useAppNavigation, useTabBarClearance } from '../../navigation/hooks';
 import { AppUser, Booking, BookingStatus, Car } from '../../types';
 
@@ -94,6 +96,49 @@ export const OwnerDashboardScreen: React.FC = () => {
     [myCars, requests, todayIso],
   );
   const occupancyPercent = totalUnits > 0 ? Math.round((bookedUnitsNow / totalUnits) * 100) : 0;
+
+  // PHASE 7 -- Owner Earnings Export. Builds a CSV from exactly the same
+  // completedBookings this tab already lists, then hands it to React
+  // Native's own Share sheet -- see utils/csv.ts's own comment for why this
+  // deliberately avoids expo-file-system/expo-sharing (kept this an OTA-
+  // updatable, pure JS/TS change, not a native rebuild).
+  const onExportEarnings = async () => {
+    const header = [
+      'Booking ID',
+      'Car',
+      'Customer',
+      'Pickup Date',
+      'Dropoff Date',
+      'Days',
+      'Rental Mode',
+      'Total (INR)',
+      'Payment Status',
+      'Booked On',
+    ];
+    const rows = completedBookings.map((b) => {
+      const car = myCars.find((c) => c.id === b.carId);
+      const customer = getUserById(b.renterId);
+      return [
+        b.id,
+        car?.name ?? 'Vehicle',
+        b.renterName ?? customer?.name ?? 'Customer',
+        formatShortDate(b.pickupDate),
+        formatShortDate(b.dropoffDate),
+        b.days,
+        b.rentalMode === 'self_drive' ? 'Self Drive' : 'With Driver',
+        b.total,
+        b.paymentStatus ?? 'unpaid',
+        formatShortDate(b.createdAt),
+      ];
+    });
+    const csv = rowsToCsv([header, ...rows]);
+    try {
+      await Share.share({ title: 'VELORA Earnings Export', message: csv });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      console.log(`VELORA_EARNINGS_EXPORT_FAILED: ${message}`);
+    }
+  };
 
   const onToggleCarActive = async (car: Car, next: boolean) => {
     // MULTI-DEVICE MIGRATION -- updateOwnerCar now writes to Supabase and
@@ -295,6 +340,7 @@ export const OwnerDashboardScreen: React.FC = () => {
               onEdit={() => navigation.navigate('OwnerAddCar', { carId: item.id })}
               onRemove={() => onRemoveCar(item)}
               onToggleActive={(next) => onToggleCarActive(item, next)}
+              onViewCalendar={() => navigation.navigate('OwnerCarCalendar', { carId: item.id })}
             />
           )}
           ListEmptyComponent={
@@ -332,17 +378,32 @@ export const OwnerDashboardScreen: React.FC = () => {
           data={completedBookings}
           keyExtractor={(item) => item.id}
           ListHeaderComponent={
-            <View style={styles.earningsSummaryRow}>
-              <View style={[styles.earningsSummaryCard, shadows.sm]}>
-                <Ionicons name="cash-outline" size={20} color={colors.success} />
-                <Text style={styles.earningsSummaryValue}>{formatCurrency(totalEarnings)}</Text>
-                <Text style={styles.earningsSummaryLabel}>Total Earned</Text>
+            <View>
+              <View style={styles.earningsSummaryRow}>
+                <View style={[styles.earningsSummaryCard, shadows.sm]}>
+                  <Ionicons name="cash-outline" size={20} color={colors.success} />
+                  <Text style={styles.earningsSummaryValue}>{formatCurrency(totalEarnings)}</Text>
+                  <Text style={styles.earningsSummaryLabel}>Total Earned</Text>
+                </View>
+                <View style={[styles.earningsSummaryCard, shadows.sm]}>
+                  <Ionicons name="hourglass-outline" size={20} color={colors.warning} />
+                  <Text style={styles.earningsSummaryValue}>{formatCurrency(pendingPayout)}</Text>
+                  <Text style={styles.earningsSummaryLabel}>Pending Payout</Text>
+                </View>
               </View>
-              <View style={[styles.earningsSummaryCard, shadows.sm]}>
-                <Ionicons name="hourglass-outline" size={20} color={colors.warning} />
-                <Text style={styles.earningsSummaryValue}>{formatCurrency(pendingPayout)}</Text>
-                <Text style={styles.earningsSummaryLabel}>Pending Payout</Text>
-              </View>
+              {/* PHASE 7 -- Owner Earnings Export. Only shown once there's
+                  something real to export -- an empty CSV (just a header
+                  row) isn't worth offering a Share sheet for. */}
+              {completedBookings.length > 0 ? (
+                <PrimaryButton
+                  label="Export as CSV"
+                  onPress={onExportEarnings}
+                  variant="outline"
+                  size="sm"
+                  icon={<Ionicons name="download-outline" size={16} color={colors.textPrimary} />}
+                  style={{ marginTop: spacing.sm }}
+                />
+              ) : null}
             </View>
           }
           ListHeaderComponentStyle={{ marginBottom: spacing.md }}
@@ -403,7 +464,8 @@ const ListingCard: React.FC<{
   onEdit: () => void;
   onRemove: () => void;
   onToggleActive: (next: boolean) => void;
-}> = ({ car, bookedNow, onEdit, onRemove, onToggleActive }) => {
+  onViewCalendar: () => void;
+}> = ({ car, bookedNow, onEdit, onRemove, onToggleActive, onViewCalendar }) => {
   // undefined/true both read as "Active" — see the Car.isActive comment in
   // types/index.ts for why missing means visible, not hidden.
   const isActive = car.isActive !== false;
@@ -431,11 +493,20 @@ const ListingCard: React.FC<{
           <Pressable onPress={onEdit} hitSlop={8} accessibilityLabel="Edit listing" style={{ marginBottom: spacing.md }}>
             <Ionicons name="create-outline" size={20} color={colors.textSecondary} />
           </Pressable>
+          <Pressable onPress={onViewCalendar} hitSlop={8} accessibilityLabel="View calendar" style={{ marginBottom: spacing.md }}>
+            <Ionicons name="calendar-outline" size={20} color={colors.textSecondary} />
+          </Pressable>
           <Pressable onPress={onRemove} hitSlop={8} accessibilityLabel="Remove listing">
             <Ionicons name="trash-outline" size={20} color={colors.danger} />
           </Pressable>
         </View>
       </View>
+      {car.bufferHours ? (
+        <View style={styles.bufferTag}>
+          <Ionicons name="time-outline" size={12} color={colors.textSecondary} />
+          <Text style={styles.bufferTagText}>{car.bufferHours}h buffer between bookings</Text>
+        </View>
+      ) : null}
       <View style={styles.inventoryRow}>
         <View style={styles.inventoryStat}>
           <Text style={styles.inventoryValue}>{totalQuantity}</Text>
@@ -513,6 +584,16 @@ const BookingRequestCard: React.FC<{
       <Text style={styles.requestDates}>
         {formatShortDate(booking.pickupDate)} - {formatShortDate(booking.dropoffDate)} · {booking.days} day{booking.days === 1 ? '' : 's'}
       </Text>
+      {/* PHASE 6 -- Countdown (display-only, see utils/bookingCountdown.ts).
+          Snapshot at render time -- unlike BookingDetailsScreen's own live
+          tick, a list row re-renders often enough (screen focus, realtime
+          booking updates) that a per-second/minute timer here isn't worth
+          the extra complexity. */}
+      {booking.status === 'pending' ? (
+        <Text style={[styles.requestCountdown, isResponseOverdue(booking.createdAt) ? styles.requestCountdownOverdue : undefined]}>
+          {isResponseOverdue(booking.createdAt) ? "Overdue to respond" : formatResponseCountdown(booking.createdAt)}
+        </Text>
+      ) : null}
       <View style={styles.requestBottomRow}>
         <Text style={styles.requestMeta}>{booking.rentalMode === 'self_drive' ? 'Self Drive' : 'With Driver'}</Text>
         <Text style={styles.requestAmount}>{formatCurrency(booking.total)}</Text>
@@ -588,6 +669,8 @@ const styles = StyleSheet.create({
   categoryTag: { alignSelf: 'flex-start', backgroundColor: colors.surface, borderRadius: radii.pill, paddingHorizontal: 8, paddingVertical: 2, marginBottom: 4 },
   categoryTagText: { ...typography.caption, color: colors.textSecondary, fontSize: 10, letterSpacing: 0.5 },
   price: { ...typography.titleMd, color: colors.textPrimary, marginTop: 4 },
+  bufferTag: { flexDirection: 'row', alignItems: 'center', marginTop: spacing.xs },
+  bufferTagText: { ...typography.caption, color: colors.textSecondary, marginLeft: 4 },
   requestCard: { backgroundColor: colors.card, borderRadius: radii.lg, padding: spacing.md, marginBottom: spacing.md },
   // Same cheap opacity-dip press feedback as CarCard/RentalCard -- no
   // Animated API, just Pressable's own per-press style function.
@@ -596,6 +679,8 @@ const styles = StyleSheet.create({
   statusBadge: { flexDirection: 'row', alignItems: 'center', borderRadius: radii.pill, paddingHorizontal: 8, paddingVertical: 3 },
   statusBadgeText: { ...typography.caption, marginLeft: 4, fontWeight: '600' as const },
   requestDates: { ...typography.bodySm, color: colors.textSecondary, marginTop: 6 },
+  requestCountdown: { ...typography.caption, color: colors.warning, fontWeight: '700', marginTop: 4 },
+  requestCountdownOverdue: { color: colors.danger },
   requestMeta: { ...typography.caption, color: colors.textTertiary, marginTop: 2 },
   earningsSummaryRow: { flexDirection: 'row' },
   earningsSummaryCard: { flex: 1, backgroundColor: colors.card, borderRadius: radii.lg, padding: spacing.md, marginRight: spacing.sm, alignItems: 'flex-start' },

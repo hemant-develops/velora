@@ -100,7 +100,56 @@ export interface Car {
   // so listings created before this field existed keep working (they simply
   // sort as oldest, via a 0 fallback, rather than breaking the sort).
   createdAt?: string;
+  // PHASE 2 -- which of the standard duration presets (see
+  // utils/duration.ts DURATION_PRESETS_HOURS) this listing offers to
+  // renters. undefined/empty means "all four", i.e. every listing created
+  // before this field existed keeps offering exactly what it did in Phase 1.
+  // Custom is always available regardless of this list -- it's priced from
+  // durationPricing.hourlyRate below, not gated by owner selection.
+  enabledDurationPresets?: number[];
+  // PHASE 2 -- owner-set duration-based pricing (see utils/pricing.ts
+  // priceForDuration). undefined = this car still prices every duration via
+  // the Phase 1 legacy formula (pricePerDay/driverPricePerDay x billable
+  // days), identical to before this field existed.
+  durationPricing?: DurationPricingTable;
+  // PHASE 2 -- mileage / KM allowance policy. undefined keeps showing the
+  // existing hardcoded "300 km/day" language already in the Rental
+  // Agreement's Fuel & Mileage clause, so a listing created before this
+  // field existed reads exactly as it did before.
+  mileagePolicy?: MileagePolicy;
+  kmLimitPerDay?: number; // meaningful only when mileagePolicy === 'limited'
+  extraKmCharge?: number; // ₹ per km over the limit, only when 'limited'
+  // PHASE 3 -- owner-stated turnaround time (cleaning/prep) needed between
+  // two bookings, in hours. INFORMATIONAL ONLY -- the app's availability
+  // gate (create_local_car_booking_hold / get_car_taken_count) is day-
+  // granularity, so it already refuses a second booking on the same
+  // calendar day once quantity is exhausted; enforcing a sub-day buffer on
+  // top of that would require redesigning those RPCs to timestamps, which
+  // is explicitly out of scope (see supabase/migrations/0002_booking_duration.sql's
+  // own note on the same limitation). Shown to the owner (listing form,
+  // dashboard, car calendar) as a reference number for deciding whether to
+  // accept a pending request, not something the app blocks bookings with.
+  bufferHours?: number;
+  // PHASE 6 -- Instant Book. undefined/false = "Request to Book" (unchanged
+  // Phase 1-5 behavior: every new booking starts 'pending' and needs the
+  // owner to Confirm/Reject it). true = a new booking on this car is
+  // confirmed immediately ('upcoming') -- see BookingsContext.createBooking.
+  instantBook?: boolean;
 }
+
+// PHASE 2 -- see Car.durationPricing above. hourlyRate prices Custom
+// durations and is the fallback for any of the four presets the owner
+// didn't set a fixed price for; each price*h is optional so an owner can
+// fix only some presets and let the rest fall back to the hourly rate.
+export interface DurationPricingTable {
+  hourlyRate: number;
+  price6h?: number;
+  price12h?: number;
+  price24h?: number;
+  price48h?: number;
+}
+
+export type MileagePolicy = 'limited' | 'unlimited';
 
 export type UserRole = 'renter' | 'owner';
 
@@ -237,6 +286,15 @@ export interface Conversation {
   lastMessageAt: string;
   unreadForRenter: number;
   unreadForOwner: number;
+  // PHASE 4 -- soft-archive: hides this conversation from ONE side's inbox
+  // (see MessagesScreen) without deleting any message and without touching
+  // the other party's view. A new incoming message un-archives it for
+  // whoever is receiving it (see MessagesContext.sendMessage) so an active
+  // thread can never stay silently hidden. Defaults to false via the ??
+  // fallback in rowToConversation for any row from before
+  // 0005_conversation_archive.sql.
+  archivedForRenter: boolean;
+  archivedForOwner: boolean;
 }
 
 export interface Review {
@@ -288,6 +346,12 @@ export interface FilterState {
   // would be exactly the kind of architecture change this milestone is
   // scoped to avoid.
   availableOnly: boolean;
+  // PHASE 7 -- Instant Book filter. A plain flag exactly like availableOnly
+  // above, but answerable entirely from Car.instantBook (see Phase 6) with
+  // no BookingsContext dependency -- so unlike availableOnly this one IS
+  // applied directly in CarsContext.filteredCars below, not deferred to
+  // HomeScreen.
+  instantBookOnly: boolean;
 }
 
 // M9 -- Trust & Safety. A report is always scoped to one concrete thing
