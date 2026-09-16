@@ -100,6 +100,18 @@ interface AuthContextValue {
   // -- so it needs no new schema, RLS policy, or SECURITY DEFINER function,
   // and touches no existing login/signup/session logic.
   resetPassword: (email: string) => Promise<AuthResult>;
+  // SECURITY FIX -- resetPassword() above only ever sent the recovery email;
+  // nothing in this app previously called Supabase Auth's own
+  // updateUser({password}) to actually apply a new one, so clicking the
+  // email link signed the user back into the app without ever changing
+  // their password. passwordRecoveryPending flips true the moment
+  // onAuthStateChange reports Supabase's own 'PASSWORD_RECOVERY' event (set
+  // only when the current session came from a recovery link, never from a
+  // normal login/signup/email-confirmation) so AppNavigation can show
+  // SetNewPasswordScreen instead of dropping the person straight into the
+  // app on an unchanged password.
+  passwordRecoveryPending: boolean;
+  updatePassword: (newPassword: string) => Promise<AuthResult>;
   // PRODUCT IMPROVEMENT -- backs the new EmailVerificationModal's "Resend"
   // action. Uses Supabase Auth's own built-in resend endpoint (the same
   // rate-limited, server-managed flow as the original confirmation email) --
@@ -138,6 +150,7 @@ interface ProfileRow {
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<AppUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [passwordRecoveryPending, setPasswordRecoveryPending] = useState(false);
   // Confirmed RLS (profiles_select_own: id = auth.uid() only) means a
   // client can never legitimately fetch another user's profile row -- so
   // this cache only ever ends up holding the signed-in user's own profile.
@@ -354,6 +367,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         data: { subscription },
       } = supabase.auth.onAuthStateChange((event, session) => {
         console.log(`VELORA_AUTH_STATE_CHANGE event=${event} hasSession=${!!session}`);
+        // Supabase emits this specific event (never SIGNED_IN) only when the
+        // active session came from a password-recovery link -- see
+        // passwordRecoveryPending's own comment on the context interface.
+        if (event === 'PASSWORD_RECOVERY') {
+          setPasswordRecoveryPending(true);
+        }
         loadUserFromSession(session).finally(() => setIsLoading(false));
       });
       authSubscription = subscription;
@@ -505,6 +524,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (error) console.log(`VELORA_PUSH_TOKEN_CLEAR_ERROR: ${error.message}`);
     }
     await supabase.auth.signOut();
+    setPasswordRecoveryPending(false);
     // onAuthStateChange (SIGNED_OUT) clears `user` state.
   };
 
@@ -585,6 +605,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       console.log(`VELORA_AUTH_RESET_PASSWORD_ERROR: ${error.message}`);
       return { success: false, error: error.message };
     }
+    return { success: true };
+  };
+
+  // SECURITY FIX -- the missing half of the reset flow (see
+  // passwordRecoveryPending's comment above). Requires the active session
+  // to already be the one Supabase issued from the recovery link, which is
+  // exactly the state SetNewPasswordScreen only renders in.
+  const updatePassword = async (newPassword: string): Promise<AuthResult> => {
+    if (newPassword.length < 6) {
+      return { success: false, error: 'Password must be at least 6 characters.' };
+    }
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    if (error) {
+      console.log(`VELORA_AUTH_UPDATE_PASSWORD_ERROR: ${error.message}`);
+      return { success: false, error: error.message };
+    }
+    setPasswordRecoveryPending(false);
     return { success: true };
   };
 
@@ -697,12 +734,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       updateProfile,
       switchRole,
       resetPassword,
+      passwordRecoveryPending,
+      updatePassword,
       resendVerificationEmail,
       submitOwnerVerification,
       getUserById,
       fetchPublicProfile,
     }),
-    [user, isLoading],
+    [user, isLoading, passwordRecoveryPending],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

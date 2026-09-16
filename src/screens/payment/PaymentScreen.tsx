@@ -113,19 +113,28 @@ export const PaymentScreen: React.FC<Props> = ({ route, navigation }) => {
           setProcessing(false);
           return;
         }
-        await recordPaymentResult({
+        // BUG FIX -- the wallet debit above already happened for real; if
+        // this record write fails, the renter must NOT be shown a
+        // confirmation screen for a payment the booking row doesn't
+        // actually reflect yet.
+        const recorded = await recordPaymentResult({
           bookingId: booking.id,
           paymentMethod: methodLabel,
           status: 'paid',
           transactionId: `WALLET-${booking.id}`,
         });
+        if (!recorded) {
+          setLastError('Your wallet was charged, but we could not update the booking. Please contact support before paying again.');
+          setProcessing(false);
+          return;
+        }
         navigation.replace('BookingConfirmation', { bookingId: booking.id });
         return;
       }
 
       const result = await processPayment({ bookingId: booking.id, method, amount: booking.total });
       if (result.success) {
-        await recordPaymentResult({
+        const recorded = await recordPaymentResult({
           bookingId: booking.id,
           paymentMethod: methodLabel,
           // Cash/Pay Later is never actually charged now -- it stays
@@ -133,6 +142,11 @@ export const PaymentScreen: React.FC<Props> = ({ route, navigation }) => {
           status: method === 'cash' ? 'unpaid' : 'paid',
           transactionId: result.transactionId,
         });
+        if (!recorded) {
+          setLastError("Payment went through, but we couldn't update the booking. Please try again or contact support.");
+          setProcessing(false);
+          return;
+        }
         navigation.replace('BookingConfirmation', { bookingId: booking.id });
         return;
       }

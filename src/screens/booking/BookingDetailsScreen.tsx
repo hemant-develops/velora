@@ -15,6 +15,7 @@ import { useCars } from '../../context/CarsContext';
 import { useCatalog } from '../../context/CatalogContext';
 import { useBookings } from '../../context/BookingsContext';
 import { useReviews } from '../../context/ReviewsContext';
+import { useNotifications } from '../../context/NotificationsContext';
 import { formatCurrency, formatDate, formatShortDate } from '../../utils/format';
 import { formatResponseCountdown, isResponseOverdue } from '../../utils/bookingCountdown';
 import {
@@ -141,6 +142,7 @@ export const BookingDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
     isLoading: bookingsLoading,
   } = useBookings();
   const { hasReviewedBooking, getReviewForBooking } = useReviews();
+  const { notify } = useNotifications();
 
   // BookingsContext reads its store from Supabase asynchronously -- on a
   // cold start (e.g. a push notification/deep link landing directly here)
@@ -441,6 +443,17 @@ export const BookingDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
             if (result.success && result.request) {
               setExtensionRequests((prev) => [result.request as ExtensionRequest, ...prev]);
               setDraftDropoffDate(null);
+              // BUG FIX -- trip-extension requests never notified anyone;
+              // the other party only ever found out by opening the app.
+              if (car) {
+                await notify({
+                  userId: car.ownerId,
+                  type: 'booking_status',
+                  title: requestType === 'extend' ? 'Trip extension requested' : 'Early return requested',
+                  message: `${customerName} asked to ${actionLabel} for booking ${booking.id} — new return date ${formatShortDate(effectiveDraftDropoff)}.`,
+                  target: { kind: 'booking', id: booking.id },
+                });
+              }
             } else if (result.error) {
               Alert.alert("Couldn't Send Request", result.error);
             }
@@ -460,6 +473,15 @@ export const BookingDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
           const result = await cancelExtensionRequest(request.id);
           if (result.success) {
             setExtensionRequests((prev) => prev.map((r) => (r.id === request.id ? { ...r, status: 'cancelled' } : r)));
+            if (car) {
+              await notify({
+                userId: car.ownerId,
+                type: 'booking_status',
+                title: 'Trip change request withdrawn',
+                message: `${customerName} withdrew their request for booking ${booking.id}.`,
+                target: { kind: 'booking', id: booking.id },
+              });
+            }
           } else if (result.error) {
             Alert.alert("Couldn't Withdraw", result.error);
           }
@@ -490,6 +512,15 @@ export const BookingDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
               prev.map((r) => (r.id === request.id ? { ...r, status: approve ? 'approved' : 'rejected' } : r)),
             );
             if (approve) refreshBookings();
+            await notify({
+              userId: booking.renterId,
+              type: 'booking_status',
+              title: approve ? 'Trip change approved' : 'Trip change declined',
+              message: approve
+                ? `Your request for booking ${booking.id} was approved — new return date ${formatShortDate(request.requestedDropoffDate)}.`
+                : `Your request for booking ${booking.id} was declined.`,
+              target: { kind: 'booking', id: booking.id },
+            });
           } else if (result.error) {
             Alert.alert("Couldn't Respond", result.error);
           }

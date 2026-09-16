@@ -122,7 +122,13 @@ interface BookingsContextValue {
   getBookingsForRenter: (renterId: string) => Booking[];
   getBookingsForCars: (carIds: string[]) => Booking[];
   getBookingById: (bookingId: string) => Booking | undefined;
-  recordPaymentResult: (input: RecordPaymentResultInput) => Promise<void>;
+  // BUG FIX -- returns whether the write actually persisted. Previously
+  // this always resolved successfully even when the underlying `.update()`
+  // failed (e.g. a network hiccup right after a real wallet debit already
+  // happened) -- PaymentScreen had no way to know the difference and would
+  // still navigate to BookingConfirmation showing success on a payment that
+  // was never actually recorded server-side.
+  recordPaymentResult: (input: RecordPaymentResultInput) => Promise<boolean>;
   // Fast local read: this car's quantity minus however many of its
   // pending/upcoming/active bookings overlap the given date range, counted
   // only from bookings this device's RLS-scoped session can see (its own,
@@ -298,7 +304,7 @@ export const BookingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   // M10 -- plain field edit on an existing booking -- never creates a
   // booking, never changes booking.status, never calls a Supabase hold RPC.
-  const recordPaymentResult = async (input: RecordPaymentResultInput): Promise<void> => {
+  const recordPaymentResult = async (input: RecordPaymentResultInput): Promise<boolean> => {
     const { bookingId, paymentMethod, status, transactionId, failureReason } = input;
     console.log(`VELORA_PAYMENT_STATUS booking=${bookingId} method=${paymentMethod} status=${status}`);
     const patch = {
@@ -311,7 +317,7 @@ export const BookingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const { error } = await supabase.from('bookings').update(patch).eq('id', bookingId);
     if (error) {
       console.log(`VELORA_PAYMENT_UPDATE_ERROR booking=${bookingId} message=${error.message}`);
-      return;
+      return false;
     }
     setBookings((prev) =>
       prev.map((b) =>
@@ -327,6 +333,7 @@ export const BookingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           : b,
       ),
     );
+    return true;
   };
 
   const createBooking = async (input: CreateBookingInput): Promise<Booking> => {
