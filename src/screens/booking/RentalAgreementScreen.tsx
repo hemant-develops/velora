@@ -13,6 +13,7 @@ import { FallbackImage } from '../../components/FallbackImage';
 import { useAuth } from '../../context/AuthContext';
 import { useCars } from '../../context/CarsContext';
 import { useBookings } from '../../context/BookingsContext';
+import { supabase } from '../../lib/supabase';
 import { formatCurrency, formatShortDate } from '../../utils/format';
 import { CANCELLATION_POLICY_TEXT } from '../../utils/policy';
 
@@ -86,6 +87,18 @@ export const RentalAgreementScreen: React.FC<Props> = ({ route, navigation }) =>
         agreementSignedBy: signature.trim(),
         agreementSignedAt: new Date().toISOString(),
       });
+      // ADMIN CONNECT -- records real usage against the admin-managed promo
+      // code exactly once, now that the booking this discount actually
+      // applied to is confirmed created. Best-effort: a failure here must
+      // never block a booking that has already been created and already
+      // has its discount baked into draft.total (same fire-and-forget
+      // tolerance already used elsewhere for non-critical side effects,
+      // e.g. CarsContext.syncCarInventory's own catch).
+      if (draft.promoCode) {
+        supabase.rpc('redeem_promo_code', { p_code: draft.promoCode }).then(({ error }) => {
+          if (error) console.log(`VELORA_PROMO_REDEEM_ERROR code=${draft.promoCode} message=${error.message}`);
+        });
+      }
       navigation.navigate('Payment', { bookingId: booking.id });
     } catch (error) {
       // Most likely a date-overlap/fully-booked rejection from

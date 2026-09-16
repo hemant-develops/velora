@@ -6,6 +6,8 @@ import { AppHeader } from '../../components/AppHeader';
 import { SearchBar } from '../../components/SearchBar';
 import { SectionHeader } from '../../components/SectionHeader';
 import { BrandCarousel } from '../../components/BrandCarousel';
+import { FeaturedCarsSection } from '../../components/FeaturedCarsSection';
+import { AdsBanner } from '../../components/AdsBanner';
 import { CarCard } from '../../components/CarCard';
 import { Chip } from '../../components/Chip';
 import { EmptyState } from '../../components/EmptyState';
@@ -135,6 +137,8 @@ export const HomeScreen: React.FC = () => {
             />
           </View>
 
+          {!isSearching && <AdsBanner />}
+
           {!marketplaceEmpty ? (
             <>
               {!isSearching && (
@@ -154,6 +158,10 @@ export const HomeScreen: React.FC = () => {
                   <Ionicons name="chevron-forward" size={18} color={colors.textPrimary} />
                 </Pressable>
               )}
+              {!isSearching && (
+                <FeaturedCarsSection cars={cars} onPressCar={(carId) => navigation.navigate('CarDetails', { carId })} />
+              )}
+
               {!isSearching && (
                 <View style={{ marginTop: spacing.xl }}>
                   <SectionHeader title="Browse by Brand" />
