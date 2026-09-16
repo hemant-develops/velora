@@ -44,12 +44,19 @@ Deno.serve(async (req: Request) => {
     const userId = record?.user_id;
     const title = record?.title ?? 'VELORA';
     const message = record?.message ?? '';
+    // DIAGNOSTIC -- confirms the webhook payload actually reached this
+    // function and had a user_id, without logging the notification's own
+    // title/message content.
+    console.log(`VELORA_SEND_PUSH_INVOKED hasUserId=${!!userId} type=${record?.type ?? 'unknown'}`);
     if (!userId) {
       return new Response(JSON.stringify({ skipped: 'no user_id in payload' }), { status: 200 });
     }
 
     const supabaseUrl = Deno.env.get('SUPABASE_URL');
     const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+    // DIAGNOSTIC -- reports ONLY whether each required env var is present
+    // (true/false); never logs the actual URL or key value.
+    console.log(`VELORA_SEND_PUSH_ENV_CHECK supabaseUrlPresent=${!!supabaseUrl} serviceRoleKeyPresent=${!!serviceRoleKey}`);
     if (!supabaseUrl || !serviceRoleKey) {
       console.log('VELORA_SEND_PUSH_MISSING_ENV');
       return new Response(JSON.stringify({ error: 'missing env' }), { status: 500 });
@@ -70,6 +77,9 @@ Deno.serve(async (req: Request) => {
       console.log(`VELORA_SEND_PUSH_TOKEN_LOOKUP_ERROR: ${error.message}`);
       return new Response(JSON.stringify({ error: error.message }), { status: 200 });
     }
+    // DIAGNOSTIC -- confirms whether a saved token row was actually found
+    // for this user_id; never logs the token value itself.
+    console.log(`VELORA_SEND_PUSH_TOKEN_LOOKUP_OK found=${!!tokenRow?.token}`);
     if (!tokenRow?.token) {
       // Normal, common case -- this person hasn't granted the notification
       // permission (or hasn't logged in since it shipped). Not an error.
@@ -99,6 +109,7 @@ Deno.serve(async (req: Request) => {
             ? prefsRow.notify_bookings !== false
             : true; // an unrecognized/future type is never silently muted
       if (prefsRow.push_enabled === false || !categoryEnabled) {
+        console.log('VELORA_SEND_PUSH_MUTED_BY_PREFS');
         return new Response(JSON.stringify({ skipped: 'muted by notification preferences' }), { status: 200 });
       }
     }
@@ -118,6 +129,12 @@ Deno.serve(async (req: Request) => {
       }),
     });
     const expoResult = await expoResponse.json();
+    // DIAGNOSTIC -- Expo's own HTTP status and response body for this push
+    // ticket. Safe to log in full: it's Expo's own delivery-status reply
+    // (e.g. { data: { status: 'ok' } } or a DeviceNotRegistered/InvalidCredentials
+    // error), not a secret -- this is exactly what distinguishes "Expo
+    // accepted it" from "Expo rejected it" per the audit's point F/#15.
+    console.log(`VELORA_SEND_PUSH_EXPO_RESPONSE httpStatus=${expoResponse.status} body=${JSON.stringify(expoResult)}`);
     return new Response(JSON.stringify({ ok: true, expoResult }), { status: 200 });
   } catch (err) {
     console.log(`VELORA_SEND_PUSH_ERROR: ${err instanceof Error ? err.message : String(err)}`);

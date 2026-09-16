@@ -18,6 +18,7 @@
     "android": {
       "package": "com.velora.rental",
       "versionCode": 1,
+      "googleServicesFile": "./firebase/google-services.json",
       "adaptiveIcon": {
         "backgroundColor": "#F4C728",
         "foregroundImage": "./assets/android-icon-foreground.png",

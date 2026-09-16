@@ -16,6 +16,13 @@ import { supabase } from '../lib/supabase';
 // token/timestamp.
 export const registerForPushNotifications = async (userId: string): Promise<void> => {
   try {
+    // PUSH-NOTIFICATION-AUDIT DIAGNOSTIC LOGS -- these never print the token
+    // value itself (see VELORA_PUSH_TOKEN_RECEIVED below), only whether each
+    // stage of registration was reached, so logcat can show exactly where
+    // this pipeline breaks for a given device without exposing anything
+    // sensitive.
+    console.log('VELORA_PUSH_REGISTER_START');
+
     if (Platform.OS === 'android') {
       await Notifications.setNotificationChannelAsync('default', {
         name: 'default',
@@ -33,6 +40,7 @@ export const registerForPushNotifications = async (userId: string): Promise<void
       console.log('VELORA_PUSH_PERMISSION_DENIED');
       return;
     }
+    console.log('VELORA_PUSH_PERMISSION_GRANTED');
 
     // `projectId` is read from app.json's extra.eas.projectId automatically
     // in an EAS/dev-client build, so nothing needs to be passed explicitly
@@ -40,11 +48,16 @@ export const registerForPushNotifications = async (userId: string): Promise<void
     const tokenResponse = await Notifications.getExpoPushTokenAsync();
     const token = tokenResponse?.data;
     if (!token) return;
+    console.log('VELORA_PUSH_TOKEN_RECEIVED');
 
     const { error } = await supabase
       .from('push_tokens')
       .upsert({ user_id: userId, token, platform: Platform.OS, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
-    if (error) console.log(`VELORA_PUSH_TOKEN_SAVE_ERROR: ${error.message}`);
+    if (error) {
+      console.log(`VELORA_PUSH_TOKEN_SAVE_ERROR: ${error.message}`);
+    } else {
+      console.log('VELORA_PUSH_TOKEN_SAVED');
+    }
   } catch (err) {
     // Never let a permission/token hiccup affect login -- this whole flow is
     // best-effort, matching logUserSession's fire-and-forget contract.

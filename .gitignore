@@ -11,6 +11,15 @@ ios/
 
 .env
 
+# PUSH-NOTIFICATION-AUDIT -- this folder is a local holding place for
+# downloaded Firebase credential files (google-services.json, and any
+# Firebase Admin SDK / service-account private-key JSON used for EAS push
+# credentials). These must never reach git history -- the service-account
+# JSON in particular contains a private key. android/ (above) already
+# excludes the real android/app/google-services.json; this covers the extra
+# copy kept here and anything else dropped into this folder.
+firebase/
+
 # Separate Next.js project (VELORA Admin Website) -- lives in a subfolder
 # here only because this was the already-connected/permitted folder; it is
 # an independent project (own package.json, own dependencies, its own git
