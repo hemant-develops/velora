@@ -30,6 +30,8 @@
 -- Safe to re-run: drop-then-create policies.
 
 drop policy if exists booking_extension_requests_participants_update on public.booking_extension_requests;
+drop policy if exists booking_extension_requests_renter_cancel on public.booking_extension_requests;
+drop policy if exists booking_extension_requests_owner_respond on public.booking_extension_requests;
 
 create policy booking_extension_requests_renter_cancel on public.booking_extension_requests
   for update to authenticated
