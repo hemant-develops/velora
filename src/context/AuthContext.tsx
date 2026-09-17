@@ -8,15 +8,17 @@ import { isValidEmail } from '../utils/format';
 import { storage } from '../utils/storage';
 import { registerForPushNotifications } from '../utils/pushNotifications';
 
-// Final-verification fix -- phone/bio/location/locationSource/
-// ownerVerification detail have no confirmed backing column in `profiles`
-// (see the comment on loadUserFromSession below), so they only ever lived in
-// React state. That meant they silently reset to blank on every full app
-// restart (not just a background/foreground cycle) -- in particular, this
-// quietly broke M9's "Near Me" quick filter on every cold start, since it
-// depends entirely on `user.location` being set. Persisting them here, on
-// device only (never sent to Supabase), keeps them intact across restarts
-// without requiring a schema change.
+// Final-verification fix -- phone/bio/location/locationSource have no
+// confirmed backing column in `profiles` (see the comment on
+// loadUserFromSession below), so they only ever lived in React state. That
+// meant they silently reset to blank on every full app restart (not just a
+// background/foreground cycle) -- in particular, this quietly broke M9's
+// "Near Me" quick filter on every cold start, since it depends entirely on
+// `user.location` being set. Persisting them here, on device only (never
+// sent to Supabase), keeps them intact across restarts without requiring a
+// schema change. ownerVerification is NOT cached here (SECURITY FIX,
+// 0020_owner_verifications.sql) -- it now has a real server-side source of
+// truth and is always freshly fetched, never trusted from an on-device copy.
 const AUTH_PROFILE_EXTRAS_KEY = 'velora.authProfileExtras.v1';
 
 interface ProfileExtras {
@@ -24,7 +26,6 @@ interface ProfileExtras {
   bio?: string;
   location?: string;
   locationSource?: 'gps' | 'manual';
-  ownerVerification?: OwnerVerification;
 }
 
 // Email-confirmation deep link. Must match app.json's `expo.scheme` ("velora")
@@ -74,6 +75,10 @@ export interface OwnerVerificationInput {
   phone: string;
   idType: string;
   idNumber: string;
+  // Storage path returned by uploadOwnerIdDocument (private
+  // owner-id-documents bucket) -- uploaded BEFORE this is called, since the
+  // RPC only stores the path, not the file itself.
+  idDocumentPath: string;
 }
 
 interface AuthContextValue {
@@ -118,7 +123,13 @@ interface AuthContextValue {
   // no new schema, RPC, or RLS needed, and the same `emailRedirectTo` as
   // signup so a resent link lands back in this app identically.
   resendVerificationEmail: (email: string) => Promise<AuthResult>;
-  submitOwnerVerification: (input: OwnerVerificationInput) => Promise<void>;
+  // SECURITY FIX -- now a real, server-reviewed submission (see
+  // submit_owner_verification RPC) instead of an instant client-side
+  // approve. Returns success/error so the screen can show the real result
+  // (e.g. "this ID is already linked to another account") instead of
+  // always succeeding.
+  submitOwnerVerification: (input: OwnerVerificationInput) => Promise<AuthResult>;
+  refreshOwnerVerificationStatus: () => Promise<void>;
   getUserById: (id: string) => AppUser | undefined;
   // Final non-payment hardening -- resolves another user's PUBLIC-safe
   // profile (name/avatar only) via the get_public_profile RPC, for the
@@ -191,32 +202,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       console.log(`VELORA_AUTH_PROFILE_LOAD_ERROR: ${error.message}`);
     }
 
+    // SECURITY FIX -- owner verification now comes from the real, admin-
+    // reviewed public.owner_verifications table (0020_owner_verifications.sql),
+    // not an on-device cache. There is no more "role already says owner so
+    // treat as instantly verified" fallback -- that fallback was the exact
+    // client-side-trust gap this migration closes. An account with
+    // role='owner' but no row here (e.g. one created before this shipped)
+    // now correctly shows 'none' and needs to actually complete
+    // verification, same as everyone else.
+    const ownerVerification = await fetchOwnerVerification(authUser.id);
+
     const extras = profileExtrasRef.current[authUser.id];
 
     setUser((prev) => {
       const base = prev && prev.id === authUser.id ? prev : undefined;
       const role = dbRoleToAppRole(profile?.role);
-      // Role-switch bug fix -- owner verification is a fact about the
-      // PERSON, not about which role happens to be active right now. This
-      // used to be rebuilt as `{ status: 'none' }` any time `role` wasn't
-      // 'owner', which silently discarded a genuinely completed
-      // verification (both the in-memory value AND the persisted extras
-      // fallback) the moment the account was viewed as a Renter -- e.g. on
-      // a TOKEN_REFRESHED tick, or a full restart while in Renter mode.
-      // switchRole('owner') later reads exactly this field to decide
-      // whether to demand verification again, so that wipe is what made
-      // Owner <-> Renter switching re-ask for verification. Computed here
-      // independently of `role` so it survives any number of switches in
-      // either direction: `base` (this session's own state) wins when it
-      // already shows verified, the on-device extras cache is the fallback
-      // (survives a restart), and only a genuinely never-verified account
-      // falls through to 'none'.
-      const knownVerification: OwnerVerification =
-        base?.ownerVerification?.status === 'verified'
-          ? base.ownerVerification
-          : extras?.ownerVerification?.status === 'verified'
-            ? extras.ownerVerification
-            : { status: 'none' };
       const nextUser: AppUser = {
         id: authUser.id,
         name: profile?.full_name || base?.name || (authUser.email ? authUser.email.split('@')[0] : 'User'),
@@ -231,19 +231,46 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         locationSource: base?.locationSource ?? extras?.locationSource,
         avatar: profile?.avatar_url || base?.avatar || avatars.abhishek,
         role,
-        ownerVerification:
-          role === 'owner' && knownVerification.status !== 'verified'
-            // profiles.role already says 'owner' (e.g. picked "List My Car"
-            // at signup) but this device has no verification record for
-            // them yet -- treat as instantly verified, same fallback as
-            // before, rather than sending an already-owner account through
-            // the verification form.
-            ? { status: 'verified', verifiedAt: new Date().toISOString() }
-            : knownVerification,
+        ownerVerification,
       };
       profileCacheRef.current.set(nextUser.id, nextUser);
       return nextUser;
     });
+  };
+
+  // Reads the caller's own row from public.owner_verifications (RLS:
+  // user_id = auth.uid() or admin) and maps it to the app's OwnerVerification
+  // shape. Never includes the raw ID number -- that column doesn't even
+  // exist server-side (only a hash does), so there is nothing to leak here.
+  const fetchOwnerVerification = async (userId: string): Promise<OwnerVerification> => {
+    const { data, error } = await supabase
+      .from('owner_verifications')
+      .select('status, full_name, phone, id_type, submitted_at, reviewed_at, rejection_reason')
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (error) {
+      console.log(`VELORA_OWNER_VERIFICATION_FETCH_ERROR: ${error.message}`);
+      return { status: 'none' };
+    }
+    if (!data) return { status: 'none' };
+    return {
+      status: data.status as OwnerVerification['status'],
+      fullName: data.full_name ?? undefined,
+      phone: data.phone ?? undefined,
+      idType: data.id_type ?? undefined,
+      submittedAt: data.submitted_at ?? undefined,
+      verifiedAt: data.status === 'verified' ? (data.reviewed_at ?? undefined) : undefined,
+      rejectionReason: data.rejection_reason ?? undefined,
+    };
+  };
+
+  // Exposed so OwnerVerificationScreen can re-check status on demand (e.g.
+  // pull-to-refresh while a submission is pending) without a full app
+  // restart -- there is no realtime subscription on this table.
+  const refreshOwnerVerificationStatus = async () => {
+    if (!user) return;
+    const ownerVerification = await fetchOwnerVerification(user.id);
+    setUser((prev) => (prev ? { ...prev, ownerVerification } : prev));
   };
 
   // MULTI-DEVICE MIGRATION -- "which phone/platform did this account log in
@@ -490,19 +517,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: true, info: 'Account created! Check your email to confirm it, then log in.' };
     }
 
-    if (role === 'owner') {
-      const { error: roleError } = await supabase
-        .from('profiles')
-        .update({ role: appRoleToDbRole('owner') })
-        .eq('id', data.session.user.id);
-      if (roleError) {
-        console.log(`VELORA_AUTH_SIGNUP_ROLE_ERROR: ${roleError.message}`);
-      }
-    }
-
     logUserSession('signup', data.session.user.id);
 
-    // onAuthStateChange (SIGNED_IN) drives the actual `user` state update.
+    // SECURITY FIX -- this used to write role='owner' directly here with
+    // zero verification the moment someone picked "I'm an owner" at
+    // signup, which was a straight bypass of switchRole's isVerifiedOwner
+    // gate (itself now backed by the real owner_verifications table -- see
+    // submitOwnerVerification). Every account now starts as a renter
+    // regardless of what they picked here; becoming an owner only ever
+    // happens through switchRole('owner'), which requires real,
+    // admin-approved verification first. SignupScreen still has the
+    // `role` it passed in and is responsible for routing someone who
+    // picked "owner" into the verification flow next -- this function no
+    // longer needs to signal that back.
     return { success: true, userId: data.session.user.id };
   };
 
@@ -644,33 +671,35 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return { success: true };
   };
 
-  // Demo verification: instantly "approved" (a real build would call an
-  // actual KYC/ID-verification provider here). Verifying also switches the
-  // account into Owner Mode right away, since that's the whole point. Only
-  // `role` is durably persisted to Supabase -- the verification detail
-  // fields (fullName/phone/idType/idNumber, verifiedAt) have no confirmed
-  // column, so they're mirrored into the on-device extras cache instead
-  // (see AUTH_PROFILE_EXTRAS_KEY) so a completed verification survives a
-  // full app restart instead of quietly reverting to a freshly-stamped,
-  // detail-less "verified" record.
-  const submitOwnerVerification = async (input: OwnerVerificationInput) => {
-    if (!user) return;
-    // Idempotent guard, mirroring switchRole's -- an already-verified
-    // account re-reaching this (it shouldn't, now that loadUserFromSession
-    // no longer wipes verification on a role switch, but this stays as a
-    // defensive backstop) must not overwrite its saved verification record
-    // or perform a redundant round trip.
-    if (isVerifiedOwner(user)) return;
-    const ownerVerification: OwnerVerification = { status: 'verified', ...input, verifiedAt: new Date().toISOString() };
-    const nextUser: AppUser = { ...user, ownerVerification, role: 'owner' };
-    setUser(nextUser);
-    profileCacheRef.current.set(nextUser.id, nextUser);
-    await persistProfileExtras(nextUser.id, { ownerVerification });
+  // SECURITY FIX -- real, server-side submission via submit_owner_verification
+  // (0020_owner_verifications.sql). No longer flips role='owner' here at
+  // all -- an admin must approve the submission first (status -> 'verified'
+  // in the database); only then does switchRole('owner') below allow
+  // entering Owner Mode. The raw ID number is sent once, over TLS, as an
+  // RPC parameter -- it is never stored client-side (not in state, not in
+  // AsyncStorage) and the server itself only ever persists a hash of it.
+  const submitOwnerVerification = async (input: OwnerVerificationInput): Promise<AuthResult> => {
+    if (!user) return { success: false, error: 'Not signed in.' };
+    if (isVerifiedOwner(user)) return { success: false, error: 'This account is already verified.' };
 
-    const { error } = await supabase.from('profiles').update({ role: appRoleToDbRole('owner') }).eq('id', user.id);
+    const { data, error } = await supabase.rpc('submit_owner_verification', {
+      p_full_name: input.fullName,
+      p_phone: input.phone,
+      p_id_type: input.idType,
+      p_id_number: input.idNumber,
+      p_id_document_path: input.idDocumentPath,
+    });
     if (error) {
       console.log(`VELORA_AUTH_OWNER_VERIFICATION_ERROR: ${error.message}`);
+      return { success: false, error: error.message };
     }
+    if (!data?.success) {
+      return { success: false, error: data?.error ?? "Couldn't submit verification. Please try again." };
+    }
+
+    const ownerVerification = await fetchOwnerVerification(user.id);
+    setUser((prev) => (prev ? { ...prev, ownerVerification } : prev));
+    return { success: true };
   };
 
   // Synchronous, cache-only lookup -- resolves the signed-in user's own
@@ -738,6 +767,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       updatePassword,
       resendVerificationEmail,
       submitOwnerVerification,
+      refreshOwnerVerificationStatus,
       getUserById,
       fetchPublicProfile,
     }),

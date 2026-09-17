@@ -154,12 +154,20 @@ export type MileagePolicy = 'limited' | 'unlimited';
 export type UserRole = 'renter' | 'owner';
 
 export interface OwnerVerification {
-  status: 'none' | 'verified';
+  // ADMIN CONNECT / SECURITY FIX -- backed by the real, server-side
+  // public.owner_verifications table (see 0020_owner_verifications.sql),
+  // not a client-only flag. 'pending'/'rejected' are real states now that
+  // an admin reviews submissions instead of instant-approving them.
+  status: 'none' | 'pending' | 'verified' | 'rejected';
   fullName?: string;
   phone?: string;
   idType?: string;
-  idNumber?: string;
+  // Deliberately NO idNumber field here -- the raw government ID number is
+  // never persisted client-side (not in this object, not in AsyncStorage)
+  // past the one submission call; the server stores only a one-way hash.
+  submittedAt?: string;
   verifiedAt?: string;
+  rejectionReason?: string;
 }
 
 export interface AppUser {

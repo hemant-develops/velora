@@ -328,3 +328,18 @@ export const uploadCarImages = async (images: PickedImage[], ownerId: string): P
 
 export const uploadAvatar = async (uri: string, userId: string, preFetchedBlob?: Blob): Promise<string> =>
   uploadImageIfLocal(uri, 'avatars', `${userId}/${Date.now()}`, preFetchedBlob);
+
+// OWNER VERIFICATION -- unlike every other upload above, `owner-id-documents`
+// is a PRIVATE bucket (see 0020_owner_verifications.sql): a government ID
+// photo must never be publicly readable by url guessing. Returns the
+// storage PATH, not a public url -- callers must generate a short-lived
+// signed url (supabase.storage.from('owner-id-documents').createSignedUrl(...))
+// to actually display it, same pattern already used for chat-audio voice
+// notes (see ConversationDetailScreen.VoiceMessageBubble).
+export const uploadOwnerIdDocument = async (uri: string, userId: string, preFetchedBlob?: Blob): Promise<string> => {
+  const result = await uploadImageIfLocalInternal(uri, 'owner-id-documents', `${userId}/${Date.now()}`, preFetchedBlob);
+  if (!result.storagePath) {
+    throw new Error('Could not determine the uploaded document path.');
+  }
+  return result.storagePath;
+};

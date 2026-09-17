@@ -14,6 +14,7 @@ export const NAV_ITEMS: NavItem[] = [
   { label: 'Dashboard', href: '/dashboard', enabled: true },
   { label: 'Users', href: '/users', enabled: true },
   { label: 'Owners', href: '/owners', enabled: true },
+  { label: 'Owner Verifications', href: '/owner-verifications', enabled: true },
   { label: 'Cars', href: '/cars', enabled: true },
   { label: 'Bookings', href: '/bookings', enabled: true },
   { label: 'Promo Codes', href: '/promo-codes', enabled: true },
