@@ -45,6 +45,23 @@ export default async function AccountPage() {
         .maybeSingle()
     : { data: null };
 
+  const { data: planRow } = isOwner
+    ? await supabase
+        .from('subscription_plans')
+        .select('name, price_paise, duration_days')
+        .eq('is_active', true)
+        .order('display_order', { ascending: true })
+        .limit(1)
+        .maybeSingle()
+    : { data: null };
+  const plan = planRow ? { name: planRow.name, pricePaise: planRow.price_paise, durationDays: planRow.duration_days } : null;
+
+  // The owner can always read their OWN store row regardless of
+  // subscription status (see owner_stores_select's `owner_id = auth.uid()`
+  // clause) -- this is just for the "View my store" link on this page, not
+  // the public-facing store page itself (which stays subscription-gated).
+  const { data: myStore } = isOwner ? await supabase.from('owner_stores').select('slug').eq('owner_id', user.id).maybeSingle() : { data: null };
+
   return (
     <div className="mx-auto max-w-2xl px-4 py-10 sm:px-6">
       <div className="flex items-center justify-between">
@@ -54,13 +71,21 @@ export default async function AccountPage() {
 
       {isOwner ? (
         <div className="mt-6 space-y-4">
-          <SubscriptionPurchase userEmail={user.email ?? ''} userName={displayName} isActive={!!hasActive} expiresAt={latestSub?.expires_at ?? null} />
-          <Link
-            href={`/owners/${user.id}`}
-            className="block rounded-2xl bg-white p-5 text-center text-sm font-semibold text-neutral-900 ring-1 ring-black/5 transition-colors hover:ring-neutral-300"
-          >
-            View my public store page
-          </Link>
+          <SubscriptionPurchase
+            userEmail={user.email ?? ''}
+            userName={displayName}
+            isActive={!!hasActive}
+            expiresAt={latestSub?.expires_at ?? null}
+            plan={plan}
+          />
+          {myStore ? (
+            <Link
+              href={`/owners/${myStore.slug}`}
+              className="block rounded-2xl bg-white p-5 text-center text-sm font-semibold text-neutral-900 ring-1 ring-black/5 transition-colors hover:ring-neutral-300"
+            >
+              View my public store page
+            </Link>
+          ) : null}
           <p className="text-center text-sm text-neutral-500">List and manage your cars in the VELORA app.</p>
         </div>
       ) : (

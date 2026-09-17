@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Alert, StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { ActivityIndicator, Alert, StyleSheet, Text, View } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import RazorpayCheckout, { CheckoutOptions, ErrorResponse, SuccessResponse } from 'react-native-razorpay';
@@ -8,9 +8,62 @@ import { colors, radii, spacing, typography } from '../../theme';
 import { ScreenHeader } from '../../components/ScreenHeader';
 import { PrimaryButton } from '../../components/PrimaryButton';
 import { useAuth } from '../../context/AuthContext';
+import { supabase } from '../../lib/supabase';
 import { formatCurrency, formatDate } from '../../utils/format';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Subscription'>;
+
+interface ActivePlan {
+  name: string;
+  pricePaise: number;
+  durationDays: number;
+}
+
+// CONFIGURABLE PRICING (0027_subscription_plans.sql) -- the price/duration
+// shown here is read from the database, never hardcoded. Changing the plan
+// row later (₹199, ₹499, a longer window, ...) updates this screen with no
+// app code change or release needed; the actual amount charged/verified is
+// independently re-derived server-side from the same table (see
+// create-subscription-order / verify-subscription-payment), so this fetch
+// is only ever for display -- it never has to be trusted for anything
+// security-relevant.
+const useActivePlan = () => {
+  const [plan, setPlan] = useState<ActivePlan | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    supabase
+      .from('subscription_plans')
+      .select('name, price_paise, duration_days')
+      .eq('is_active', true)
+      .order('display_order', { ascending: true })
+      .limit(1)
+      .maybeSingle()
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        if (error) {
+          console.log(`VELORA_SUBSCRIPTION_PLAN_FETCH_ERROR: ${error.message}`);
+        } else if (data) {
+          setPlan({ name: data.name, pricePaise: data.price_paise, durationDays: data.duration_days });
+        }
+        setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return { plan, loading };
+};
+
+const formatDuration = (days: number): string => {
+  if (days % 30 === 0) {
+    const months = days / 30;
+    return `${months} month${months === 1 ? '' : 's'}`;
+  }
+  return `${days} days`;
+};
 
 // SUBSCRIPTION MONETIZATION -- "Subscription Active -> Car Listing Active"
 // from the product spec. This is the FIRST real (not mocked) payment flow in
@@ -21,6 +74,7 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Subscription'>;
 // steps and reports whatever they say, never assumes success on its own.
 export const SubscriptionScreen: React.FC<Props> = ({ navigation }) => {
   const { user, createSubscriptionOrder, verifySubscriptionPayment } = useAuth();
+  const { plan, loading: planLoading } = useActivePlan();
   const [purchasing, setPurchasing] = useState(false);
   const [error, setError] = useState<string | undefined>();
 
@@ -45,7 +99,7 @@ export const SubscriptionScreen: React.FC<Props> = ({ navigation }) => {
         amount: order.amount,
         currency: order.currency,
         name: 'VELORA',
-        description: 'Owner Subscription — 3 months',
+        description: plan ? `${plan.name} — ${formatDuration(plan.durationDays)}` : 'Owner Subscription',
         prefill: { email: user.email, contact: user.phone, name: user.name },
         theme: { color: colors.primary },
       };
@@ -94,12 +148,20 @@ export const SubscriptionScreen: React.FC<Props> = ({ navigation }) => {
               <Text style={styles.activeBody}>Valid until {formatDate(user.subscriptionExpiresAt)}. You can list and manage your cars.</Text>
             ) : null}
           </View>
+        ) : planLoading ? (
+          <View style={styles.planCard}>
+            <ActivityIndicator color={colors.primaryDark} />
+          </View>
+        ) : !plan ? (
+          <View style={styles.planCard}>
+            <Text style={styles.benefitText}>No subscription plan is available right now. Please try again shortly.</Text>
+          </View>
         ) : (
           <View style={styles.planCard}>
-            <Text style={styles.planLabel}>VELORA OWNER PLAN</Text>
+            <Text style={styles.planLabel}>{plan.name.toUpperCase()}</Text>
             <Text style={styles.planPrice}>
-              {formatCurrency(1)}
-              <Text style={styles.planPeriod}> / 3 months</Text>
+              {formatCurrency(plan.pricePaise / 100)}
+              <Text style={styles.planPeriod}> / {formatDuration(plan.durationDays)}</Text>
             </Text>
             <Text style={styles.planNote}>Introductory pricing — subject to change on renewal.</Text>
 
@@ -119,7 +181,7 @@ export const SubscriptionScreen: React.FC<Props> = ({ navigation }) => {
             {error ? <Text style={styles.error}>{error}</Text> : null}
 
             <PrimaryButton
-              label={purchasing ? 'Opening payment…' : `Subscribe for ${formatCurrency(1)}`}
+              label={purchasing ? 'Opening payment…' : `Subscribe for ${formatCurrency(plan.pricePaise / 100)}`}
               onPress={onSubscribe}
               loading={purchasing}
               disabled={purchasing}

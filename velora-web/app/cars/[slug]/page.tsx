@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getCarById, getOwnerProfile } from "@/lib/queries";
+import { getCarById, getOwnerStoreBySlug } from "@/lib/queries";
 import { parseCarIdFromSlug, buildCarSlug } from "@/lib/slug";
 import { formatCurrency } from "@/lib/format";
 import { Rating } from "@/components/Rating";
@@ -49,7 +49,7 @@ export default async function CarPage({ params }: CarPageProps) {
   const car = await loadCar(slug);
   if (!car) notFound();
 
-  const owner = await getOwnerProfile(car.ownerId);
+  const store = car.ownerStoreSlug ? await getOwnerStoreBySlug(car.ownerStoreSlug) : null;
   const city = car.location.split(",")[0]?.trim();
 
   // STRUCTURED DATA -- schema.org Product + Offer (Google has no dedicated
@@ -152,16 +152,16 @@ export default async function CarPage({ params }: CarPageProps) {
             </div>
           ) : null}
 
-          {owner ? (
+          {store ? (
             <div className="mt-6">
               <h2 className="text-base font-semibold text-neutral-900">Listed by</h2>
-              <Link href={`/owners/${owner.id}`} className="mt-2 flex items-center gap-3 rounded-2xl bg-white p-4 ring-1 ring-black/5 transition-colors hover:ring-neutral-300">
+              <Link href={`/owners/${store.slug}`} className="mt-2 flex items-center gap-3 rounded-2xl bg-white p-4 ring-1 ring-black/5 transition-colors hover:ring-neutral-300">
                 <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-full bg-neutral-100">
-                  {owner.avatar ? <Image src={owner.avatar} alt={owner.name} fill sizes="44px" className="object-cover" /> : null}
+                  {store.ownerAvatar ? <Image src={store.ownerAvatar} alt={store.storeName} fill sizes="44px" className="object-cover" /> : null}
                 </div>
                 <div>
-                  <p className="text-sm font-semibold text-neutral-900">{owner.name}</p>
-                  <p className="text-xs text-neutral-500">View owner profile</p>
+                  <p className="text-sm font-semibold text-neutral-900">{store.storeName}</p>
+                  <p className="text-xs text-neutral-500">View store</p>
                 </div>
               </Link>
             </div>

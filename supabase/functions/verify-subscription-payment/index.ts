@@ -20,13 +20,59 @@
 // @ts-nocheck -- Deno edge runtime; see send-push/index.ts for why.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.116.0';
 
-const SUBSCRIPTION_AMOUNT_PAISE = 100;
-const SUBSCRIPTION_DAYS = 90; // "3 months", counted as a fixed 90-day window -- see the migration's own note on why this is a one-time purchase, not a Razorpay recurring Subscription.
-
 const toHex = (buffer: ArrayBuffer): string =>
   Array.from(new Uint8Array(buffer))
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
+
+// Same slugify rule as public.slugify() (0028_owner_stores.sql) --
+// duplicated here (not called via RPC) because upsert_owner_store() keys
+// off auth.uid(), which is null under this function's service-role client;
+// this function has no authenticated-user session, only the owner_id it
+// already verified above, so it inserts owner_stores directly instead.
+const slugify = (input: string): string =>
+  input
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
+// FIRST-SUBSCRIPTION STOREFRONT -- "every subscription-active owner gets a
+// proper digital storefront" from the product spec, automatically, not as
+// a manual second step. Only ever runs once per owner (guarded by checking
+// for an existing row first) -- an owner who already has a store (from a
+// previous subscription, or from editing it via the app's Store Settings
+// screen) keeps their existing store_name/slug untouched on a renewal.
+const ensureOwnerStore = async (admin: ReturnType<typeof createClient>, ownerId: string): Promise<void> => {
+  const { data: existing } = await admin.from('owner_stores').select('owner_id').eq('owner_id', ownerId).maybeSingle();
+  if (existing) return;
+
+  const { data: profile } = await admin.from('profiles').select('full_name').eq('id', ownerId).maybeSingle();
+  const baseName = profile?.full_name ? `${profile.full_name}'s Cars` : 'My VELORA Store';
+  const baseSlug = slugify(baseName) || 'store';
+
+  let candidateSlug = baseSlug;
+  let suffix = 1;
+  // Service-role bypasses RLS, so this can see every existing slug to check
+  // availability -- the same reason upsert_owner_store() (the owner's own
+  // later edits) is SECURITY DEFINER rather than a plain RLS-scoped insert.
+  while (true) {
+    const { data: collision } = await admin.from('owner_stores').select('owner_id').eq('slug', candidateSlug).maybeSingle();
+    if (!collision) break;
+    suffix += 1;
+    candidateSlug = `${baseSlug}-${suffix}`;
+  }
+
+  const { error: storeError } = await admin.from('owner_stores').insert({ owner_id: ownerId, store_name: baseName, slug: candidateSlug });
+  if (storeError) {
+    // Best-effort -- a failure here must never fail the subscription
+    // activation itself (the payment already succeeded and is verified;
+    // the owner can still create/edit their store manually afterwards).
+    console.log(`VELORA_VERIFY_SUB_STORE_CREATE_ERROR: ${storeError.message}`);
+  } else {
+    console.log(`VELORA_VERIFY_SUB_STORE_CREATED owner=${ownerId} slug=${candidateSlug}`);
+  }
+};
 
 Deno.serve(async (req: Request) => {
   try {
@@ -44,12 +90,13 @@ Deno.serve(async (req: Request) => {
     const supabaseUrl = Deno.env.get('SUPABASE_URL');
     const anonKey = Deno.env.get('SUPABASE_ANON_KEY');
     const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+    const razorpayKeyId = Deno.env.get('RAZORPAY_KEY_ID');
     const razorpayKeySecret = Deno.env.get('RAZORPAY_KEY_SECRET');
 
     console.log(
-      `VELORA_VERIFY_SUB_ENV_CHECK urlPresent=${!!supabaseUrl} anonKeyPresent=${!!anonKey} serviceRoleKeyPresent=${!!serviceRoleKey} razorpayKeySecretPresent=${!!razorpayKeySecret}`,
+      `VELORA_VERIFY_SUB_ENV_CHECK urlPresent=${!!supabaseUrl} anonKeyPresent=${!!anonKey} serviceRoleKeyPresent=${!!serviceRoleKey} razorpayKeyIdPresent=${!!razorpayKeyId} razorpayKeySecretPresent=${!!razorpayKeySecret}`,
     );
-    if (!supabaseUrl || !anonKey || !serviceRoleKey || !razorpayKeySecret) {
+    if (!supabaseUrl || !anonKey || !serviceRoleKey || !razorpayKeyId || !razorpayKeySecret) {
       return new Response(JSON.stringify({ error: 'Server is not configured for subscriptions yet.' }), { status: 500 });
     }
 
@@ -81,20 +128,53 @@ Deno.serve(async (req: Request) => {
       return new Response(JSON.stringify({ error: 'Payment could not be verified.' }), { status: 400 });
     }
 
+    // CONFIGURABLE PRICING -- what this payment actually paid for (amount,
+    // and which plan_id) is read back from RAZORPAY'S OWN order record, not
+    // from anything the client sent. A verified signature only proves "this
+    // payment_id genuinely belongs to this order_id" -- it says nothing
+    // about which VELORA plan that order was created for, so trusting a
+    // client-supplied plan_id here would let someone who genuinely paid for
+    // the cheapest plan claim a longer/different one. create-subscription-
+    // order stamped `notes.plan_id` on the order at creation time
+    // specifically so this function can read it back authoritatively.
+    const basicAuth = btoa(`${razorpayKeyId}:${razorpayKeySecret}`);
+    const orderResponse = await fetch(`https://api.razorpay.com/v1/orders/${orderId}`, {
+      headers: { Authorization: `Basic ${basicAuth}` },
+    });
+    const order = await orderResponse.json();
+    const planId = order?.notes?.plan_id;
+    const amountPaise = order?.amount;
+    console.log(`VELORA_VERIFY_SUB_ORDER_LOOKUP httpStatus=${orderResponse.status} planId=${planId ?? 'none'} amountPresent=${amountPaise != null}`);
+    if (!orderResponse.ok || !planId || amountPaise == null) {
+      return new Response(JSON.stringify({ error: 'Could not confirm the plan for this payment. Please contact support.' }), { status: 500 });
+    }
+
+    const authedForPlan = createClient(supabaseUrl, anonKey);
+    const { data: plan, error: planError } = await authedForPlan
+      .from('subscription_plans')
+      .select('duration_days')
+      .eq('id', planId)
+      .maybeSingle();
+    if (planError || !plan) {
+      console.log(`VELORA_VERIFY_SUB_PLAN_LOOKUP_ERROR: ${planError?.message ?? 'plan not found'}`);
+      return new Response(JSON.stringify({ error: 'Could not confirm the plan for this payment. Please contact support.' }), { status: 500 });
+    }
+
     // Service-role client -- deliberately bypasses owner_subscriptions' RLS
     // (which has no client INSERT grant at all) because this is the one
     // server-verified write path the whole table's security model depends
     // on. Never returns the service-role key or any secret to the caller.
     const admin = createClient(supabaseUrl, serviceRoleKey);
     const now = new Date();
-    const expiresAt = new Date(now.getTime() + SUBSCRIPTION_DAYS * 24 * 60 * 60 * 1000);
+    const expiresAt = new Date(now.getTime() + plan.duration_days * 24 * 60 * 60 * 1000);
 
     const { error: insertError } = await admin.from('owner_subscriptions').insert({
       owner_id: user.id,
       status: 'active',
       razorpay_order_id: orderId,
       razorpay_payment_id: paymentId,
-      amount_paise: SUBSCRIPTION_AMOUNT_PAISE,
+      plan_id: planId,
+      amount_paise: amountPaise,
       started_at: now.toISOString(),
       expires_at: expiresAt.toISOString(),
     });
@@ -106,12 +186,14 @@ Deno.serve(async (req: Request) => {
       // subscription this payment paid for already exists.
       if (insertError.code === '23505') {
         console.log('VELORA_VERIFY_SUB_DUPLICATE_PAYMENT_IGNORED');
+        await ensureOwnerStore(admin, user.id);
         return new Response(JSON.stringify({ success: true, expiresAt: expiresAt.toISOString() }), { status: 200 });
       }
       console.log(`VELORA_VERIFY_SUB_INSERT_ERROR: ${insertError.message}`);
       return new Response(JSON.stringify({ error: 'Payment verified but activation failed. Please contact support.' }), { status: 500 });
     }
 
+    await ensureOwnerStore(admin, user.id);
     console.log(`VELORA_VERIFY_SUB_ACTIVATED owner=${user.id}`);
     return new Response(JSON.stringify({ success: true, expiresAt: expiresAt.toISOString() }), {
       status: 200,

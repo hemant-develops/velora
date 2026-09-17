@@ -348,6 +348,9 @@ export const ProfileScreen: React.FC = () => {
             onPress={() => navigation.navigate('Subscription')}
           />
         ) : null}
+        {isOwner && user.subscriptionActive ? (
+          <ProfileMenuItem icon="storefront-outline" label="My Store" onPress={() => navigation.navigate('StoreSettings')} />
+        ) : null}
         <ProfileMenuItem icon="shield-checkmark-outline" label="Privacy" onPress={() => navigation.navigate('Legal', { kind: 'privacy' })} />
         <ProfileMenuItem icon="document-text-outline" label="Terms & Conditions" onPress={() => navigation.navigate('Legal', { kind: 'terms' })} />
         <ProfileMenuItem icon="help-circle-outline" label="Help & Support" onPress={() => navigation.navigate('HelpSupport')} />

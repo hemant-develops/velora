@@ -1,5 +1,5 @@
 import { supabase, isSupabaseConfigured } from './supabase';
-import { PublicCar, PublicOwner, SearchFilters } from './types';
+import { PublicCar, PublicStore, SearchFilters } from './types';
 import { haversineDistanceKm } from './geo';
 
 // car_listings.brand_id is a plain text column with no foreign key to
@@ -49,6 +49,19 @@ const getBrandMap = async (): Promise<Map<string, string>> => {
   return new Map(((data ?? []) as BrandRow[]).map((b) => [b.id, b.name]));
 };
 
+// OWNER STORE (0028_owner_stores.sql) -- a car's "Listed by" link needs the
+// owner's STORE slug, not their raw id. Batched the same way brands are --
+// one query for every unique owner on the page instead of one per car.
+const getOwnerStoreSlugMap = async (ownerIds: string[]): Promise<Map<string, string>> => {
+  if (ownerIds.length === 0) return new Map();
+  const { data, error } = await supabase.from('owner_stores').select('owner_id, slug').in('owner_id', ownerIds);
+  if (error) {
+    console.error('VELORA_WEB_OWNER_STORE_SLUGS_ERROR', error.message);
+    return new Map();
+  }
+  return new Map(((data ?? []) as { owner_id: string; slug: string }[]).map((row) => [row.owner_id, row.slug]));
+};
+
 // SUBSCRIPTION MONETIZATION -- "Subscription Active -> Car Listing Active ->
 // Website + App visible" (0026_owner_subscriptions.sql). A car with
 // is_active=true is still hidden from every public page here if its
@@ -72,7 +85,7 @@ const filterCarsBySubscribedOwners = async <T extends { ownerId: string }>(cars:
   return cars.filter((c) => subscribed.has(c.ownerId));
 };
 
-const rowToCar = (row: CarRow, brandName: string): PublicCar => ({
+const rowToCar = (row: CarRow, brandName: string, ownerStoreSlug: string | null): PublicCar => ({
   id: row.id,
   ownerId: row.owner_id,
   name: row.name,
@@ -97,6 +110,7 @@ const rowToCar = (row: CarRow, brandName: string): PublicCar => ({
   // Mirrors the mobile app's getCarQuantity() ?? 1 fallback -- a listing
   // created before this field existed simply defaults to a single unit.
   quantity: row.quantity ?? 1,
+  ownerStoreSlug,
 });
 
 // Text relevance is deliberately simple (substring match, weighted by WHERE
@@ -133,7 +147,11 @@ export const searchActiveCars = async (filters: SearchFilters): Promise<PublicCa
     return [];
   }
 
-  let cars = await filterCarsBySubscribedOwners(((data ?? []) as CarRow[]).map((row) => rowToCar(row, brandMap.get(row.brand_id) ?? 'Other')));
+  const rows = (data ?? []) as CarRow[];
+  const storeSlugMap = await getOwnerStoreSlugMap(Array.from(new Set(rows.map((r) => r.owner_id))));
+  let cars = await filterCarsBySubscribedOwners(
+    rows.map((row) => rowToCar(row, brandMap.get(row.brand_id) ?? 'Other', storeSlugMap.get(row.owner_id) ?? null)),
+  );
 
   // A free-text query further narrows AND ranks -- unlike the structured
   // filters above (price/seats/location/features), name/brand text search
@@ -188,23 +206,10 @@ export const getCarById = async (id: string): Promise<PublicCar | null> => {
   if (!data) return null;
 
   const row = data as CarRow;
-  const car = rowToCar(row, brandMap.get(row.brand_id) ?? 'Other');
+  const storeSlugMap = await getOwnerStoreSlugMap([row.owner_id]);
+  const car = rowToCar(row, brandMap.get(row.brand_id) ?? 'Other', storeSlugMap.get(row.owner_id) ?? null);
   const [visible] = await filterCarsBySubscribedOwners([car]);
   return visible ?? null;
-};
-
-export const getOwnerProfile = async (ownerId: string): Promise<PublicOwner | null> => {
-  if (!isSupabaseConfigured) return null;
-
-  const { data, error } = await supabase.from('profiles').select('id, full_name, avatar_url').eq('id', ownerId).maybeSingle();
-  if (error) {
-    console.error('VELORA_WEB_OWNER_FETCH_ERROR', error.message);
-    return null;
-  }
-  if (!data) return null;
-
-  const row = data as { id: string; full_name: string | null; avatar_url: string | null };
-  return { id: row.id, name: row.full_name || 'VELORA Owner', avatar: row.avatar_url };
 };
 
 // Sitemap-only: every active car's id/slug material, with no filters and no
@@ -238,12 +243,31 @@ export const listAllActiveCarSlugs = async (): Promise<{ id: string; ownerId: st
   return filterCarsBySubscribedOwners(rows);
 };
 
+// Sitemap-only: every publicly-visible store's slug. Reads owner_stores
+// directly (not the RPC, which fetches one store's full detail) filtered
+// to owners with an active subscription -- same visibility rule as
+// everything else in this file.
+export const listAllStoreSlugs = async (): Promise<string[]> => {
+  if (!isSupabaseConfigured) return [];
+
+  const { data, error } = await supabase.from('owner_stores').select('owner_id, slug');
+  if (error) {
+    console.error('VELORA_WEB_SITEMAP_STORES_ERROR', error.message);
+    return [];
+  }
+
+  const rows = (data ?? []) as { owner_id: string; slug: string }[];
+  const visible = await filterCarsBySubscribedOwners(rows.map((r) => ({ ownerId: r.owner_id, slug: r.slug })));
+  return visible.map((r) => r.slug);
+};
+
 export const getActiveCarsByOwner = async (ownerId: string): Promise<PublicCar[]> => {
   if (!isSupabaseConfigured) return [];
 
-  const [{ data, error }, brandMap] = await Promise.all([
+  const [{ data, error }, brandMap, storeSlugMap] = await Promise.all([
     supabase.from('car_listings').select(CAR_COLUMNS).eq('owner_id', ownerId).eq('is_active', true).order('created_at', { ascending: false }),
     getBrandMap(),
+    getOwnerStoreSlugMap([ownerId]),
   ]);
 
   if (error) {
@@ -251,5 +275,33 @@ export const getActiveCarsByOwner = async (ownerId: string): Promise<PublicCar[]
     return [];
   }
 
-  return filterCarsBySubscribedOwners(((data ?? []) as CarRow[]).map((row) => rowToCar(row, brandMap.get(row.brand_id) ?? 'Other')));
+  return filterCarsBySubscribedOwners(
+    ((data ?? []) as CarRow[]).map((row) => rowToCar(row, brandMap.get(row.brand_id) ?? 'Other', storeSlugMap.get(ownerId) ?? null)),
+  );
+};
+
+// OWNER STORE (0028_owner_stores.sql) -- resolves a store by its public
+// slug via the same SECURITY DEFINER RPC the migration defines, which
+// already enforces "only if this owner has an active subscription" server-
+// side -- this function never needs its own subscription check on top.
+export const getOwnerStoreBySlug = async (slug: string): Promise<PublicStore | null> => {
+  if (!isSupabaseConfigured) return null;
+
+  const { data, error } = await supabase.rpc('get_owner_store_by_slug', { p_slug: slug });
+  if (error) {
+    console.error('VELORA_WEB_OWNER_STORE_FETCH_ERROR', error.message);
+    return null;
+  }
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row) return null;
+
+  return {
+    ownerId: row.owner_id,
+    storeName: row.store_name,
+    slug: row.slug,
+    description: row.description ?? '',
+    policies: row.policies ?? '',
+    ownerName: row.owner_name || 'VELORA Owner',
+    ownerAvatar: row.owner_avatar,
+  };
 };

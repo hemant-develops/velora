@@ -12,12 +12,27 @@ declare global {
   }
 }
 
+interface Plan {
+  name: string;
+  pricePaise: number;
+  durationDays: number;
+}
+
 interface Props {
   userEmail: string;
   userName: string;
   isActive: boolean;
   expiresAt: string | null;
+  plan: Plan | null;
 }
+
+const formatDuration = (days: number): string => {
+  if (days % 30 === 0) {
+    const months = days / 30;
+    return `${months} month${months === 1 ? '' : 's'}`;
+  }
+  return `${days} days`;
+};
 
 // Web counterpart of the mobile app's SubscriptionScreen.tsx -- same two
 // Edge Functions (create-subscription-order / verify-subscription-payment),
@@ -26,7 +41,7 @@ interface Props {
 // component nor any other browser code ever sees a Razorpay secret --
 // both Edge Functions hold that, exactly like send-push holds the
 // service-role key.
-export const SubscriptionPurchase: React.FC<Props> = ({ userEmail, userName, isActive, expiresAt }) => {
+export const SubscriptionPurchase: React.FC<Props> = ({ userEmail, userName, isActive, expiresAt, plan }) => {
   const router = useRouter();
   const [purchasing, setPurchasing] = useState(false);
   const [error, setError] = useState<string | undefined>();
@@ -56,7 +71,7 @@ export const SubscriptionPurchase: React.FC<Props> = ({ userEmail, userName, isA
         amount: orderData.amount,
         currency: orderData.currency,
         name: 'VELORA',
-        description: 'Owner Subscription — 3 months',
+        description: plan ? `${plan.name} — ${formatDuration(plan.durationDays)}` : 'Owner Subscription',
         prefill: { email: userEmail, name: userName },
         theme: { color: '#F4C728' },
         handler: async (response: { razorpay_order_id: string; razorpay_payment_id: string; razorpay_signature: string }) => {
@@ -97,12 +112,14 @@ export const SubscriptionPurchase: React.FC<Props> = ({ userEmail, userName, isA
           <p className="text-sm font-semibold text-emerald-700">Subscription active</p>
           {expiresAt ? <p className="mt-1 text-sm text-neutral-500">Valid until {new Date(expiresAt).toLocaleDateString('en-IN')}.</p> : null}
         </>
+      ) : !plan ? (
+        <p className="text-sm text-neutral-500">No subscription plan is available right now. Please try again shortly.</p>
       ) : (
         <>
-          <p className="text-xs font-semibold uppercase tracking-wide text-neutral-400">VELORA Owner Plan</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-neutral-400">{plan.name}</p>
           <p className="mt-1 text-2xl font-bold text-neutral-900">
-            {formatCurrency(1)}
-            <span className="text-sm font-normal text-neutral-500"> / 3 months</span>
+            {formatCurrency(plan.pricePaise / 100)}
+            <span className="text-sm font-normal text-neutral-500"> / {formatDuration(plan.durationDays)}</span>
           </p>
           <p className="mt-1 text-xs text-neutral-400">Introductory pricing — subject to change on renewal.</p>
           {error ? <p className="mt-3 text-sm text-red-600">{error}</p> : null}
@@ -112,7 +129,7 @@ export const SubscriptionPurchase: React.FC<Props> = ({ userEmail, userName, isA
             disabled={purchasing || !scriptReady}
             className="mt-4 h-11 w-full rounded-lg bg-neutral-900 text-sm font-semibold text-white transition-colors hover:bg-neutral-800 disabled:opacity-60"
           >
-            {purchasing ? 'Opening payment…' : `Subscribe for ${formatCurrency(1)}`}
+            {purchasing ? 'Opening payment…' : `Subscribe for ${formatCurrency(plan.pricePaise / 100)}`}
           </button>
         </>
       )}

@@ -83,7 +83,15 @@ const withTimeout = <T,>(promise: Promise<T>, ms: number, label: string): Promis
     }),
   ]);
 
-const isRetryableMessage = (message: string): boolean =>
+// Exported (not just used for the internal retry decision below) so a
+// screen's own catch block can tell a genuine network-ish failure apart
+// from any OTHER error (an RLS/permission rejection, a missing bucket, a
+// Postgres constraint, ...) -- see EditProfileScreen/OwnerAddCarScreen's
+// own comment on why showing "check your connection" for a non-network
+// error was a real, misleading bug: the actual Supabase/Postgres message is
+// what a real fix (or a real support ticket) needs to see, not a generic
+// guess that happens to be wrong.
+export const isRetryableMessage = (message: string): boolean =>
   !isStaleLocalFileMessage(message) &&
   /network|timed out|fetch failed|timeout|abort|empty when read|socket|connection/i.test(message);
 

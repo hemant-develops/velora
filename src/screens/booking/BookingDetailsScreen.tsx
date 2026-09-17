@@ -141,7 +141,7 @@ export const BookingDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
     refreshBookings,
     isLoading: bookingsLoading,
   } = useBookings();
-  const { hasReviewedBooking, getReviewForBooking } = useReviews();
+  const { hasReviewedBooking, getReviewForBooking, hasReviewedCustomerForBooking } = useReviews();
   const { notify } = useNotifications();
 
   // BookingsContext reads its store from Supabase asynchronously -- on a
@@ -231,6 +231,7 @@ export const BookingDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
   const showRefundNote = (booking.status === 'cancelled' || booking.status === 'rejected') && paymentStatus === 'paid';
   const alreadyReviewed = hasReviewedBooking(booking.id);
   const existingReview = getReviewForBooking(booking.id);
+  const alreadyReviewedCustomer = hasReviewedCustomerForBooking(booking.id);
 
   const onViewCustomerProfile = () => {
     navigation.navigate('CustomerProfile', { userId: booking.renterId, carId: booking.carId, carName: car?.name });
@@ -772,7 +773,22 @@ export const BookingDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
                 onPress={onMessageCustomer}
                 variant="outline"
                 icon={<Ionicons name="chatbubble-ellipses-outline" size={16} color={colors.textPrimary} />}
+                style={booking.status === 'completed' ? { marginBottom: spacing.sm } : undefined}
               />
+              {booking.status === 'completed' ? (
+                alreadyReviewedCustomer ? (
+                  <View style={styles.reviewedRow}>
+                    <Ionicons name="checkmark-circle" size={16} color={colors.success} />
+                    <Text style={styles.reviewedText}>You rated this customer</Text>
+                  </View>
+                ) : (
+                  <PrimaryButton
+                    label="Rate Customer"
+                    onPress={() => navigation.navigate('RateCustomer', { bookingId: booking.id, customerId: booking.renterId, customerName })}
+                    variant="dark"
+                  />
+                )
+              ) : null}
             </>
           ) : (
             <>

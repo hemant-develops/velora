@@ -361,6 +361,30 @@ export interface Review {
   createdAt: string;
 }
 
+// TWO-WAY REVIEWS (0029_two_way_reviews.sql) -- Customer -> Owner/Store,
+// alongside the existing Customer -> Car review above.
+export interface OwnerReview {
+  id: string;
+  bookingId: string;
+  reviewerId: string;
+  ownerId: string;
+  rating: number;
+  comment: string;
+  createdAt: string;
+}
+
+// TWO-WAY REVIEWS -- Owner -> Customer. Private: never shown on the public
+// website (customers have no public profile there).
+export interface CustomerReview {
+  id: string;
+  bookingId: string;
+  reviewerId: string;
+  customerId: string;
+  rating: number;
+  comment: string;
+  createdAt: string;
+}
+
 // Local notification system -- generated only from real events already
 // happening elsewhere in the app (a booking being created/changing status,
 // a new chat message). Never fabricated/seeded content.

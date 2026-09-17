@@ -98,6 +98,8 @@ export type RootStackParamList = {
   OwnerVerification: undefined;
   PhoneVerification: undefined;
   Subscription: undefined;
+  StoreSettings: undefined;
+  RateCustomer: { bookingId: string; customerId: string; customerName: string };
   OwnerProfile: { ownerId: string; carId?: string; carName?: string };
   // A pushed, dedicated screen for "Home -> tap a brand" (see BrandCarsScreen
   // for why this replaced the old in-place Home filter).

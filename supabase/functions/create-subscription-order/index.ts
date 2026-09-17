@@ -28,11 +28,12 @@
 // @ts-nocheck -- Deno edge runtime; see send-push/index.ts for why.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.116.0';
 
-// Introductory pricing per the product decision -- ₹1 for a 3-month window.
-// Deliberately a plain constant (not caller-supplied) so nobody can request
-// an order for a different amount than what this function actually verifies
-// and grants later in verify-subscription-payment.
-const SUBSCRIPTION_AMOUNT_PAISE = 100; // ₹1.00
+// CONFIGURABLE PRICING (0027_subscription_plans.sql) -- the amount is read
+// from public.subscription_plans on every call, never hardcoded here. This
+// is what lets the price change (₹1 -> ₹199 -> ₹499, ...) from a single
+// database row with no app/website code change or redeploy of anything --
+// this function and verify-subscription-payment are the only two places
+// that ever need to agree on the price, and both read the same table.
 const SUBSCRIPTION_CURRENCY = 'INR';
 
 Deno.serve(async (req: Request) => {
@@ -69,6 +70,21 @@ Deno.serve(async (req: Request) => {
       return new Response(JSON.stringify({ error: 'Authentication required.' }), { status: 401 });
     }
 
+    // The currently active plan -- lowest display_order among is_active
+    // rows, matching the ordering convention every other catalog table in
+    // this project (brands, car_models) already uses.
+    const { data: plan, error: planError } = await authClient
+      .from('subscription_plans')
+      .select('id, price_paise, duration_days')
+      .eq('is_active', true)
+      .order('display_order', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (planError || !plan) {
+      console.log(`VELORA_CREATE_SUB_ORDER_NO_PLAN: ${planError?.message ?? 'no active plan'}`);
+      return new Response(JSON.stringify({ error: 'No subscription plan is available right now.' }), { status: 500 });
+    }
+
     const basicAuth = btoa(`${razorpayKeyId}:${razorpayKeySecret}`);
     const razorpayResponse = await fetch('https://api.razorpay.com/v1/orders', {
       method: 'POST',
@@ -77,11 +93,11 @@ Deno.serve(async (req: Request) => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        amount: SUBSCRIPTION_AMOUNT_PAISE,
+        amount: plan.price_paise,
         currency: SUBSCRIPTION_CURRENCY,
         // Razorpay requires this to be <= 40 chars.
         receipt: `sub_${user.id.slice(0, 8)}_${Date.now()}`,
-        notes: { purpose: 'owner_subscription', owner_id: user.id },
+        notes: { purpose: 'owner_subscription', owner_id: user.id, plan_id: plan.id },
       }),
     });
 
@@ -95,9 +111,10 @@ Deno.serve(async (req: Request) => {
     return new Response(
       JSON.stringify({
         orderId: razorpayResult.id,
-        amount: SUBSCRIPTION_AMOUNT_PAISE,
+        amount: plan.price_paise,
         currency: SUBSCRIPTION_CURRENCY,
         keyId: razorpayKeyId,
+        planId: plan.id,
       }),
       { status: 200, headers: { 'Content-Type': 'application/json' } },
     );

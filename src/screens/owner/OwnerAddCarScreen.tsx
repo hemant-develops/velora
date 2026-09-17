@@ -16,7 +16,7 @@ import { generateId } from '../../utils/format';
 import { detectCurrentCoordinates, detectCurrentLocationLabel, requestForegroundPermission } from '../../hooks/useDeviceLocation';
 import { getCarQuantity } from '../../utils/inventory';
 import { showToast } from '../../utils/toast';
-import { isStaleLocalFileMessage, PickedImage, readUriAsBlobWithRetry, uploadCarImages } from '../../utils/uploadImage';
+import { isRetryableMessage, isStaleLocalFileMessage, PickedImage, readUriAsBlobWithRetry, uploadCarImages } from '../../utils/uploadImage';
 import { DURATION_PRESETS_HOURS, formatDurationHours } from '../../utils/duration';
 import { Car, CarCategory, FuelType, MileagePolicy, RentalMode, Transmission } from '../../types';
 
@@ -526,7 +526,7 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
       // this exact case -- see isStaleLocalFileMessage in uploadImage.ts.
       const isStalePhoto = isStaleLocalFileMessage(message);
       const isSessionError = /session has expired/i.test(message);
-      const isNetworkError = /network request failed|fetch failed|network error|timed out/i.test(message);
+      const isNetworkError = isRetryableMessage(message) || /network request failed|network error/i.test(message);
       const isImageUploadError = /couldn't upload image|photo \d+ of \d+ failed/i.test(message);
       setError(
         isStalePhoto
@@ -536,7 +536,15 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
             : isNetworkError
               ? "You're offline. Check your connection and try again."
               : isImageUploadError
-                ? "One of your photos couldn't be uploaded. Check your connection and try again."
+                // BUG FIX -- this used to always say "check your connection"
+                // for ANY upload failure, but uploadImage.ts wraps every
+                // failure type in this same "Couldn't upload image: ..."
+                // prefix -- including an RLS/permission rejection or a
+                // missing storage bucket, neither of which is a connection
+                // problem. `message` already IS the real underlying reason
+                // (isNetworkError above already caught the genuinely
+                // network-ish ones), so show it instead of guessing wrong.
+                ? message
                 : isEditMode
                   ? "We couldn't save your changes right now. Please try again."
                   : "We couldn't publish this listing right now. Please try again.",
