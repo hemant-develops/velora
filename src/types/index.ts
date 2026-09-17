@@ -18,6 +18,10 @@ export interface Brand {
   id: string;
   name: string;
   logo: string;
+  // See supabase/migrations/0024_manual_brand_entry.sql -- true for a brand
+  // an owner typed in via "Can't find your brand? Add manually" that's
+  // still pending admin review. Undefined/false for the curated catalog.
+  isCustom?: boolean;
 }
 
 // PHASE A (Catalog) -- a canonical model row from the new public.car_models
@@ -135,6 +139,14 @@ export interface Car {
   // owner to Confirm/Reject it). true = a new booking on this car is
   // confirmed immediately ('upcoming') -- see BookingsContext.createBooking.
   instantBook?: boolean;
+  // NEAR ME -- device GPS coordinates captured when the owner used "Use
+  // current location" for this listing's pickup location (see
+  // supabase/migrations/0022_car_geo_coordinates.sql). undefined for any
+  // listing whose owner typed the location manually, or created before this
+  // field existed -- HomeScreen's "Near Me" filter simply excludes a car
+  // with no coordinates rather than guessing.
+  latitude?: number;
+  longitude?: number;
 }
 
 // PHASE 2 -- see Car.durationPricing above. hourlyRate prices Custom
@@ -154,12 +166,20 @@ export type MileagePolicy = 'limited' | 'unlimited';
 export type UserRole = 'renter' | 'owner';
 
 export interface OwnerVerification {
-  status: 'none' | 'verified';
+  // ADMIN CONNECT / SECURITY FIX -- backed by the real, server-side
+  // public.owner_verifications table (see 0020_owner_verifications.sql),
+  // not a client-only flag. 'pending'/'rejected' are real states now that
+  // an admin reviews submissions instead of instant-approving them.
+  status: 'none' | 'pending' | 'verified' | 'rejected';
   fullName?: string;
   phone?: string;
   idType?: string;
-  idNumber?: string;
+  // Deliberately NO idNumber field here -- the raw government ID number is
+  // never persisted client-side (not in this object, not in AsyncStorage)
+  // past the one submission call; the server stores only a one-way hash.
+  submittedAt?: string;
   verifiedAt?: string;
+  rejectionReason?: string;
 }
 
 export interface AppUser {
@@ -180,6 +200,17 @@ export interface AppUser {
   // "Current location" vs "Manually set" -- it never affects behavior.
   location: string;
   locationSource?: 'gps' | 'manual';
+  // PAYMENT METHODS FIX -- the old Payment Methods screen under Profile was
+  // a fully hardcoded, disconnected demo card with a disabled "Add Card"
+  // button and no relation at all to the real per-booking method picker on
+  // PaymentScreen (see lib/paymentGateway.ts -- VELORA has no real payment
+  // gateway/card vault to actually save a card into). This is the honest,
+  // working replacement: a persisted DEFAULT method (same four real options
+  // PaymentScreen already offers), pre-selected there instead of always
+  // defaulting to UPI. On-device only (see ProfileExtras in AuthContext),
+  // same as bio/phone/location -- it's a convenience preference, not
+  // financial data.
+  preferredPaymentMethod?: 'upi' | 'card' | 'wallet' | 'cash';
   avatar: string;
   role: UserRole;
   // A renter can only ever flip into Owner Mode once this is 'verified' —
@@ -188,6 +219,28 @@ export interface AppUser {
   // one-time Owner Verification form from Profile. This stops a casual
   // renter from tapping their way into owner mode and listing fake cars.
   ownerVerification?: OwnerVerification;
+  // PHONE IDENTITY BINDING -- distinct from the free-text `phone` field
+  // above (that one is just an editable profile field, never verified).
+  // This reflects public.phone_identities (0021_phone_identity_binding.sql):
+  // a real, Supabase-Auth-verified (auth.users.phone_confirmed_at) phone
+  // number bound to exactly this account, enforced unique at the database
+  // level so the same verified number can never belong to two accounts.
+  phoneVerification?: PhoneVerification;
+  // SUBSCRIPTION MONETIZATION -- reflects public.owner_subscriptions via
+  // has_active_subscription() (0026_owner_subscriptions.sql). An owner can
+  // only list a NEW car (see OwnerAddCarScreen) while this is true; a
+  // renter simply never has an active row and this stays false. Set only
+  // from a real, server-verified Razorpay payment (see
+  // verify-subscription-payment Edge Function) -- never assumed true from
+  // any client-side state.
+  subscriptionActive?: boolean;
+  subscriptionExpiresAt?: string;
+}
+
+export interface PhoneVerification {
+  verified: boolean;
+  phone?: string;
+  verifiedAt?: string;
 }
 
 // Real booking lifecycle: every new booking starts 'pending' until the
@@ -259,12 +312,12 @@ export interface ChatMessage {
   senderId: string;
   text: string;
   createdAt: string;
-  // A voice note recorded in-app (see src/hooks/useVoiceRecorder.ts). `text`
-  // is still always set (a short "🎤 Voice message" label) so every existing
-  // preview/notification code path that reads `.text` keeps working
-  // unchanged -- attachmentUrl is purely additive.
+  // `text` is still always set to a short display label (e.g. "🎤 Voice
+  // message", "📍 Location shared") so every existing preview/notification
+  // code path that reads `.text` keeps working unchanged -- attachmentUrl
+  // is purely additive. 'location' stores "<lat>,<lng>" as attachmentUrl.
   attachmentUrl?: string;
-  attachmentType?: 'audio';
+  attachmentType?: 'audio' | 'location';
 }
 
 // A conversation is always between one specific renter and one specific
@@ -303,6 +356,30 @@ export interface Review {
   carId: string;
   renterId: string;
   renterName: string;
+  rating: number;
+  comment: string;
+  createdAt: string;
+}
+
+// TWO-WAY REVIEWS (0029_two_way_reviews.sql) -- Customer -> Owner/Store,
+// alongside the existing Customer -> Car review above.
+export interface OwnerReview {
+  id: string;
+  bookingId: string;
+  reviewerId: string;
+  ownerId: string;
+  rating: number;
+  comment: string;
+  createdAt: string;
+}
+
+// TWO-WAY REVIEWS -- Owner -> Customer. Private: never shown on the public
+// website (customers have no public profile there).
+export interface CustomerReview {
+  id: string;
+  bookingId: string;
+  reviewerId: string;
+  customerId: string;
   rating: number;
   comment: string;
   createdAt: string;

@@ -10,21 +10,28 @@ interface Props extends TextInputProps {
   leftIcon?: keyof typeof Ionicons.glyphMap;
 }
 
-export const InputField: React.FC<Props> = ({ label, error, isPassword, leftIcon, style, ...rest }) => {
+export const InputField: React.FC<Props> = ({ label, error, isPassword, leftIcon, style, multiline, ...rest }) => {
   const [secure, setSecure] = useState(!!isPassword);
 
   return (
     <View style={styles.wrapper}>
       {label ? <Text style={styles.label}>{label}</Text> : null}
-      <View style={[styles.inputRow, error ? styles.inputRowError : undefined]}>
+      <View
+        style={[
+          styles.inputRow,
+          multiline ? styles.inputRowMultiline : undefined,
+          error ? styles.inputRowError : undefined,
+        ]}
+      >
         {leftIcon ? (
           <Ionicons name={leftIcon} size={18} color={colors.textTertiary} style={{ marginRight: 8 }} />
         ) : null}
         <TextInput
-          style={[styles.input, style]}
+          style={[styles.input, multiline ? styles.inputMultiline : undefined, style]}
           placeholderTextColor={colors.textTertiary}
           secureTextEntry={secure}
           autoCapitalize="none"
+          multiline={multiline}
           {...rest}
         />
         {isPassword ? (
@@ -52,6 +59,8 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   inputRowError: { borderColor: colors.danger, backgroundColor: colors.dangerBg },
+  inputRowMultiline: { height: undefined, minHeight: 54, alignItems: 'flex-start', paddingVertical: spacing.sm },
   input: { flex: 1, ...typography.bodyLg, color: colors.textPrimary, paddingVertical: 0 },
+  inputMultiline: { paddingVertical: 0, textAlignVertical: 'top' },
   error: { ...typography.bodySm, color: colors.danger, marginTop: 6 },
 });

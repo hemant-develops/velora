@@ -14,6 +14,7 @@ import { PublicProfileSkeleton } from '../../components/SkeletonLoader';
 import { useAuth } from '../../context/AuthContext';
 import { useCars } from '../../context/CarsContext';
 import { usePublicProfile } from '../../hooks/usePublicProfile';
+import { supabase } from '../../lib/supabase';
 import { formatCurrency, formatDate } from '../../utils/format';
 import { getProfileCompleteness } from '../../utils/profile';
 import { fetchHostReliability, HostReliability } from '../../utils/hostReliability';
@@ -51,6 +52,36 @@ export const OwnerPublicProfileScreen: React.FC<Props> = ({ route, navigation })
     fetchHostReliability(ownerId).then((result) => {
       if (!cancelled) setReliability(result);
     });
+    return () => {
+      cancelled = true;
+    };
+  }, [isSelf, ownerId]);
+
+  // TWO-WAY REVIEWS -- the owner's OWN rating from Customer -> Owner
+  // reviews (0029_two_way_reviews.sql), distinct from the car-rating
+  // aggregate computed below. owner_stores' rating/review_count is kept
+  // authoritative by a trigger, so this is a plain read, never a client
+  // computation.
+  const [ownerRating, setOwnerRating] = useState<{ rating: number; reviewCount: number } | null>(null);
+  useEffect(() => {
+    if (isSelf || !ownerId) {
+      setOwnerRating(null);
+      return;
+    }
+    let cancelled = false;
+    supabase
+      .from('owner_stores')
+      .select('rating, review_count')
+      .eq('owner_id', ownerId)
+      .maybeSingle()
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        if (error) {
+          console.log(`VELORA_OWNER_RATING_FETCH_ERROR: ${error.message}`);
+          return;
+        }
+        if (data && data.review_count > 0) setOwnerRating({ rating: Number(data.rating), reviewCount: data.review_count });
+      });
     return () => {
       cancelled = true;
     };
@@ -165,7 +196,14 @@ export const OwnerPublicProfileScreen: React.FC<Props> = ({ route, navigation })
         ) : null}
         {aggregateRating !== null ? (
           <View style={[styles.metaRow, { marginTop: 6 }]}>
+            <Text style={styles.ratingLabel}>Cars:</Text>
             <Rating value={aggregateRating} reviewCount={totalReviews} size={14} />
+          </View>
+        ) : null}
+        {ownerRating ? (
+          <View style={[styles.metaRow, { marginTop: 4 }]}>
+            <Text style={styles.ratingLabel}>Owner:</Text>
+            <Rating value={ownerRating.rating} reviewCount={ownerRating.reviewCount} size={14} />
           </View>
         ) : null}
         {/* Plain, factual line -- not a score graphic or a percentage badge.
@@ -247,6 +285,7 @@ const styles = StyleSheet.create({
   verifiedText: { ...typography.caption, color: colors.success, fontWeight: '700', marginLeft: 3 },
   metaRow: { flexDirection: 'row', alignItems: 'center', marginTop: 6 },
   metaText: { ...typography.bodySm, color: colors.textSecondary, marginLeft: 4 },
+  ratingLabel: { ...typography.bodySm, color: colors.textTertiary, marginRight: 4, fontWeight: '600' },
   section: { paddingHorizontal: spacing.lg, marginTop: spacing.md },
   sectionTitle: { ...typography.headingSm, marginBottom: spacing.sm },
   bodyText: { ...typography.bodyMd, color: colors.textSecondary, lineHeight: 21 },

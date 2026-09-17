@@ -135,6 +135,23 @@ Deno.serve(async (req: Request) => {
     // error), not a secret -- this is exactly what distinguishes "Expo
     // accepted it" from "Expo rejected it" per the audit's point F/#15.
     console.log(`VELORA_SEND_PUSH_EXPO_RESPONSE httpStatus=${expoResponse.status} body=${JSON.stringify(expoResult)}`);
+
+    // BUG FIX -- a DeviceNotRegistered response means Expo/the OS has
+    // permanently invalidated this token (app uninstalled, permission
+    // revoked at the OS level, etc.) -- every future push to this user was
+    // silently failing forever with nothing ever clearing the stale row.
+    // Blanking it (same convention AuthContext.logout() already uses, not a
+    // delete) makes this user look "unregistered" until their next
+    // successful registerForPushNotifications() call saves a fresh token.
+    const ticket = expoResult?.data;
+    if (ticket?.status === 'error' && ticket?.details?.error === 'DeviceNotRegistered') {
+      console.log(`VELORA_SEND_PUSH_STALE_TOKEN_CLEARED user=${userId}`);
+      const { error: clearError } = await admin.from('push_tokens').update({ token: '' }).eq('user_id', userId);
+      if (clearError) {
+        console.log(`VELORA_SEND_PUSH_STALE_TOKEN_CLEAR_ERROR: ${clearError.message}`);
+      }
+    }
+
     return new Response(JSON.stringify({ ok: true, expoResult }), { status: 200 });
   } catch (err) {
     console.log(`VELORA_SEND_PUSH_ERROR: ${err instanceof Error ? err.message : String(err)}`);

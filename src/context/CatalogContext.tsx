@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase';
+import { generateId } from '../utils/format';
 import { Brand, CatalogModel } from '../types';
 
 // PHASE A -- CATALOG FOUNDATION
@@ -24,6 +25,7 @@ interface BrandRow {
   logo_url: string | null;
   is_active: boolean;
   display_order: number;
+  is_custom: boolean;
 }
 
 interface CarModelRow {
@@ -48,6 +50,7 @@ const rowToBrand = (row: BrandRow): Brand => ({
   // Falls back to a neutral placeholder rather than an empty/broken <Image>
   // -- a brand added by an admin without a logo yet should still render.
   logo: row.logo_url || 'https://images.unsplash.com/photo-1502877338535-766e1452684a?q=80&w=1200&auto=format&fit=crop',
+  isCustom: row.is_custom,
 });
 
 const rowToModel = (row: CarModelRow): CatalogModel => ({
@@ -75,6 +78,7 @@ export interface ManualModelInput {
 }
 
 export type AddManualModelResult = { ok: true; modelId: string } | { ok: false; error: string };
+export type AddManualBrandResult = { ok: true; brandId: string } | { ok: false; error: string };
 
 interface CatalogContextValue {
   brands: Brand[];
@@ -87,6 +91,11 @@ interface CatalogContextValue {
   // the entire client-writable surface car_models RLS allows (see the
   // migration) — this can never create or edit a canonical/active entry.
   addManualModel: (input: ManualModelInput) => Promise<AddManualModelResult>;
+  // Same "Add manually" escape hatch, one level up -- for when the car's
+  // actual BRAND isn't in the curated catalog at all (see
+  // supabase/migrations/0024_manual_brand_entry.sql). Same pending/
+  // owner-scoped shape as addManualModel above.
+  addManualBrand: (name: string) => Promise<AddManualBrandResult>;
   refreshCatalog: () => Promise<void>;
 }
 
@@ -102,7 +111,13 @@ export const CatalogProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const token = ++fetchTokenRef.current;
     try {
       const [brandsResult, modelsResult] = await Promise.all([
-        supabase.from('brands').select('*').eq('is_active', true).order('display_order', { ascending: true }),
+        // RLS returns every active brand PLUS this signed-in owner's own
+        // pending custom submissions -- see brands_select_authenticated in
+        // 0024_manual_brand_entry.sql. No client-side is_active filter here
+        // for the same reason car_models below doesn't have one: filtering
+        // it here would hide an owner's own pending custom brand from their
+        // own listing wizard.
+        supabase.from('brands').select('*').order('display_order', { ascending: true }),
         // RLS returns every active model PLUS this signed-in owner's own
         // pending custom submissions -- see car_models_select in the
         // migration. No client-side filtering needed on top of that.
@@ -196,8 +211,46 @@ export const CatalogProvider: React.FC<{ children: React.ReactNode }> = ({ child
     return { ok: true, modelId: newModel.id };
   };
 
+  const addManualBrand = async (name: string): Promise<AddManualBrandResult> => {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) return { ok: false, error: 'You must be signed in to add a brand.' };
+
+    const trimmedName = name.trim();
+    // brands.id is a plain text primary key (not a generated uuid -- see
+    // 0001_catalog_foundation.sql), unlike car_models, so a fresh, unique id
+    // has to be generated client-side rather than left to the database.
+    const { data, error } = await supabase
+      .from('brands')
+      .insert({
+        id: generateId('brand'),
+        name: trimmedName,
+        is_custom: true,
+        is_active: false,
+        created_by: user.id,
+      })
+      .select('id')
+      .single();
+
+    if (error) {
+      console.log(`VELORA_CATALOG_ADD_MANUAL_BRAND_ERROR: ${error.message}`);
+      return { ok: false, error: "Couldn't add this brand right now. Please try again." };
+    }
+
+    const newBrand: Brand = {
+      id: (data as { id: string }).id,
+      name: trimmedName,
+      logo: 'https://images.unsplash.com/photo-1502877338535-766e1452684a?q=80&w=1200&auto=format&fit=crop',
+      isCustom: true,
+    };
+    setBrands((prev) => [...prev, newBrand]);
+
+    return { ok: true, brandId: newBrand.id };
+  };
+
   const value = useMemo<CatalogContextValue>(
-    () => ({ brands, isLoaded, getModelsForBrand, getModelById, addManualModel, refreshCatalog: fetchCatalog }),
+    () => ({ brands, isLoaded, getModelsForBrand, getModelById, addManualModel, addManualBrand, refreshCatalog: fetchCatalog }),
     [brands, models, isLoaded],
   );
 

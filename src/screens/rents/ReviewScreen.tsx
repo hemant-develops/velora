@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
@@ -26,12 +26,17 @@ export const ReviewScreen: React.FC<Props> = ({ route, navigation }) => {
   const { user } = useAuth();
   const { getCarById, updateCarRating } = useCars();
   const { getBookingById } = useBookings();
-  const { addReview, hasReviewedBooking } = useReviews();
+  const { addReview, hasReviewedBooking, addOwnerReview } = useReviews();
   const car = getCarById(route.params.carId);
   const booking = getBookingById(route.params.bookingId);
 
   const [rating, setRating] = useState(5);
   const [comment, setComment] = useState('');
+  // TWO-WAY REVIEWS -- Customer -> Owner/Store, collected in the same flow
+  // as the existing Customer -> Car review so a renter rates both in one
+  // pass instead of two separate screens for the same completed booking.
+  const [ownerRating, setOwnerRating] = useState(5);
+  const [ownerComment, setOwnerComment] = useState('');
   const [saving, setSaving] = useState(false);
 
   // Final-verification fix -- addReview() (ReviewsContext) has no data-layer
@@ -80,12 +85,31 @@ export const ReviewScreen: React.FC<Props> = ({ route, navigation }) => {
       return;
     }
     await updateCarRating(car.id, rating);
+
+    // Best-effort -- the car review above is the one this screen is
+    // primarily reached for, and already succeeded; a failure rating the
+    // owner (e.g. a network blip right after the first insert) shouldn't
+    // block the person from leaving or make them think the WHOLE review
+    // failed when the car review they cared about already went through.
+    const ownerResult = await addOwnerReview({
+      bookingId: route.params.bookingId,
+      ownerId: car.ownerId,
+      rating: ownerRating,
+      comment: ownerComment.trim(),
+    });
+    if (!ownerResult.success) {
+      console.log(`VELORA_OWNER_REVIEW_SUBMIT_FAILED: ${ownerResult.error}`);
+    }
+
     setSaving(false);
     navigation.goBack();
   };
 
   return (
-    <View style={{ flex: 1, backgroundColor: colors.background }}>
+    <KeyboardAvoidingView
+      style={{ flex: 1, backgroundColor: colors.background }}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+    >
       <ScreenHeader title="Rate & Review" onBack={() => navigation.goBack()} />
 
       <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: FOOTER_CLEARANCE }}>
@@ -114,12 +138,28 @@ export const ReviewScreen: React.FC<Props> = ({ route, navigation }) => {
           multiline
           style={{ height: 110, textAlignVertical: 'top' }}
         />
+
+        <Text style={styles.sectionTitle}>How was the owner?</Text>
+        <View style={styles.starRow}>
+          {STARS.map((s) => (
+            <Pressable key={s} onPress={() => setOwnerRating(s)} hitSlop={6} accessibilityLabel={`Rate owner ${s} stars`}>
+              <Ionicons name={s <= ownerRating ? 'star' : 'star-outline'} size={40} color={colors.star} style={{ marginRight: 8 }} />
+            </Pressable>
+          ))}
+        </View>
+        <InputField
+          placeholder="Communication, professionalism, listing accuracy..."
+          value={ownerComment}
+          onChangeText={setOwnerComment}
+          multiline
+          style={{ height: 90, textAlignVertical: 'top' }}
+        />
       </ScrollView>
 
       <View style={[styles.footer, shadows.lg, { paddingBottom: insets.bottom + spacing.md }]}>
         <PrimaryButton label="Submit Review" onPress={onSubmit} loading={saving} />
       </View>
-    </View>
+    </KeyboardAvoidingView>
   );
 };
 

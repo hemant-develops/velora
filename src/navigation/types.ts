@@ -38,6 +38,12 @@ export interface BookingDraft {
   taxes: number;
   serviceFee: number;
   total: number;
+  // ADMIN CONNECT -- the real promo code applied (validated against the
+  // admin-managed public.promo_codes table via validate_promo_code), if
+  // any. Carried through so RentalAgreementScreen can redeem it (increment
+  // used_count) exactly once, at the moment the booking is actually
+  // created -- not on every live-preview validation in BookingScreen.
+  promoCode?: string;
 }
 
 export type RootStackParamList = {
@@ -90,6 +96,10 @@ export type RootStackParamList = {
   // OwnerCarCalendarScreen).
   OwnerCarCalendar: { carId: string };
   OwnerVerification: undefined;
+  PhoneVerification: undefined;
+  Subscription: undefined;
+  StoreSettings: undefined;
+  RateCustomer: { bookingId: string; customerId: string; customerName: string };
   OwnerProfile: { ownerId: string; carId?: string; carName?: string };
   // A pushed, dedicated screen for "Home -> tap a brand" (see BrandCarsScreen
   // for why this replaced the old in-place Home filter).

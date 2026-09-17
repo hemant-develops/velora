@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Image, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
@@ -18,7 +18,7 @@ import { useCars } from '../../context/CarsContext';
 import { useBookings } from '../../context/BookingsContext';
 import { avatars } from '../../data/images';
 import { formatCurrency, formatDate, formatTime12h } from '../../utils/format';
-import { applyOffer } from '../../utils/offers';
+import { supabase } from '../../lib/supabase';
 import {
   DEFAULT_DURATION_HOURS,
   DURATION_PRESETS_HOURS,
@@ -90,12 +90,16 @@ export const BookingScreen: React.FC<Props> = ({ route, navigation }) => {
   const [timePickerVisible, setTimePickerVisible] = useState(false);
   const [pickupLocation, setPickupLocation] = useState(car?.location ?? '');
   const [dropoffLocation, setDropoffLocation] = useState(car?.location ?? '');
-  // A real, working promo code -- see utils/offers.ts. Applied to the actual
-  // subtotal below and carried through into the total handed to Agreement/
-  // Payment; nothing here is a cosmetic "discount" label with no effect.
+  // ADMIN CONNECT -- validated against the real, admin-managed
+  // public.promo_codes table (via the validate_promo_code RPC), not a
+  // hardcoded local list. Applied to the actual subtotal below and carried
+  // through into the total handed to Agreement/Payment; nothing here is a
+  // cosmetic "discount" label with no effect.
   const [promoInput, setPromoInput] = useState('');
   const [appliedPromoCode, setAppliedPromoCode] = useState<string | undefined>();
+  const [promoDiscount, setPromoDiscount] = useState(0);
   const [promoError, setPromoError] = useState<string | undefined>();
+  const [promoLoading, setPromoLoading] = useState(false);
 
   // The duration actually in effect right now. While Custom is selected but
   // the renter hasn't typed a (valid) value yet, this falls back to the
@@ -162,6 +166,47 @@ export const BookingScreen: React.FC<Props> = ({ route, navigation }) => {
     setTimePickerVisible(false);
   };
 
+  // Computed before the `if (!car)` guard below (same `car ? ... : 0`
+  // pattern as localEstimate above) purely so the re-validation effect
+  // right after it can be called unconditionally, per the rules of hooks --
+  // the real, guard-protected `subtotal` used everywhere else in this
+  // screen is still computed once, after the guard, from this same value.
+  const preGuardSubtotal = car ? priceForDuration(car, rentalMode, effectiveDurationHours) : 0;
+
+  // ADMIN CONNECT -- re-validates the applied code against the real
+  // promo_codes table whenever the subtotal it was applied against changes
+  // (e.g. the renter adjusts duration after applying), so the discount
+  // shown never silently goes stale. A code that stops qualifying (e.g. a
+  // minimum-subtotal-style condition, or it expired mid-session) is
+  // cleared with an explanation rather than left showing a wrong number.
+  useEffect(() => {
+    if (!appliedPromoCode) {
+      setPromoDiscount(0);
+      return;
+    }
+    let cancelled = false;
+    setPromoLoading(true);
+    (async () => {
+      const { data, error } = await supabase.rpc('validate_promo_code', {
+        p_code: appliedPromoCode,
+        p_subtotal: preGuardSubtotal,
+      });
+      if (cancelled) return;
+      if (error || !data?.success) {
+        setAppliedPromoCode(undefined);
+        setPromoDiscount(0);
+        setPromoError(error?.message ?? data?.error ?? "That promo code isn't valid.");
+      } else {
+        setPromoDiscount(typeof data.discount === 'number' ? data.discount : 0);
+      }
+      setPromoLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appliedPromoCode, preGuardSubtotal]);
+
   if (!car) {
     return (
       <View style={{ flex: 1, backgroundColor: colors.background }}>
@@ -174,25 +219,32 @@ export const BookingScreen: React.FC<Props> = ({ route, navigation }) => {
   // PHASE 2 -- real duration-based owner pricing (see utils/pricing.ts).
   // Falls back to the exact Phase 1 flat-price formula for any car without
   // owner-set duration pricing, so nothing changes for existing listings.
-  const subtotal = priceForDuration(car, rentalMode, effectiveDurationHours);
+  const subtotal = preGuardSubtotal;
   const taxes = Math.round(subtotal * TAX_RATE);
-  const promoResult = appliedPromoCode ? applyOffer(appliedPromoCode, subtotal) : undefined;
-  const discount = promoResult?.success ? promoResult.discount : 0;
+  const discount = promoDiscount;
   const total = subtotal + taxes + SERVICE_FEE - discount;
 
-  const onApplyPromo = () => {
-    const result = applyOffer(promoInput, subtotal);
-    if (!result.success) {
-      setPromoError(result.error);
+  const onApplyPromo = async () => {
+    const code = promoInput.trim().toUpperCase();
+    if (!code) return;
+    setPromoLoading(true);
+    setPromoError(undefined);
+    const { data, error } = await supabase.rpc('validate_promo_code', { p_code: code, p_subtotal: subtotal });
+    setPromoLoading(false);
+    if (error || !data?.success) {
+      setPromoError(error?.message ?? data?.error ?? "That promo code isn't valid.");
       setAppliedPromoCode(undefined);
+      setPromoDiscount(0);
       return;
     }
-    setAppliedPromoCode(promoInput.trim().toUpperCase());
+    setPromoDiscount(typeof data.discount === 'number' ? data.discount : 0);
+    setAppliedPromoCode(code);
     setPromoError(undefined);
   };
 
   const onRemovePromo = () => {
     setAppliedPromoCode(undefined);
+    setPromoDiscount(0);
     setPromoInput('');
     setPromoError(undefined);
   };
@@ -215,11 +267,15 @@ export const BookingScreen: React.FC<Props> = ({ route, navigation }) => {
       taxes,
       serviceFee: SERVICE_FEE,
       total,
+      promoCode: appliedPromoCode,
     });
   };
 
   return (
-    <View style={{ flex: 1, backgroundColor: colors.background }}>
+    <KeyboardAvoidingView
+      style={{ flex: 1, backgroundColor: colors.background }}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+    >
       <ScreenHeader title="Booking Details" onBack={() => navigation.goBack()} />
 
       <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: 160 }} showsVerticalScrollIndicator={false}>
@@ -411,11 +467,11 @@ export const BookingScreen: React.FC<Props> = ({ route, navigation }) => {
               style={{ flex: 1 }}
             />
             <Pressable
-              style={[styles.promoApplyBtn, !promoInput.trim() ? styles.promoApplyBtnDisabled : undefined]}
+              style={[styles.promoApplyBtn, !promoInput.trim() || promoLoading ? styles.promoApplyBtnDisabled : undefined]}
               onPress={onApplyPromo}
-              disabled={!promoInput.trim()}
+              disabled={!promoInput.trim() || promoLoading}
             >
-              <Text style={styles.promoApplyBtnText}>Apply</Text>
+              <Text style={styles.promoApplyBtnText}>{promoLoading ? 'Checking…' : 'Apply'}</Text>
             </Pressable>
           </View>
         )}
@@ -467,7 +523,7 @@ export const BookingScreen: React.FC<Props> = ({ route, navigation }) => {
           style={{ paddingHorizontal: spacing.xl }}
         />
       </View>
-    </View>
+    </KeyboardAvoidingView>
   );
 };
 

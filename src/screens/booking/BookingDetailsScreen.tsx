@@ -15,6 +15,7 @@ import { useCars } from '../../context/CarsContext';
 import { useCatalog } from '../../context/CatalogContext';
 import { useBookings } from '../../context/BookingsContext';
 import { useReviews } from '../../context/ReviewsContext';
+import { useNotifications } from '../../context/NotificationsContext';
 import { formatCurrency, formatDate, formatShortDate } from '../../utils/format';
 import { formatResponseCountdown, isResponseOverdue } from '../../utils/bookingCountdown';
 import {
@@ -140,7 +141,8 @@ export const BookingDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
     refreshBookings,
     isLoading: bookingsLoading,
   } = useBookings();
-  const { hasReviewedBooking, getReviewForBooking } = useReviews();
+  const { hasReviewedBooking, getReviewForBooking, hasReviewedCustomerForBooking } = useReviews();
+  const { notify } = useNotifications();
 
   // BookingsContext reads its store from Supabase asynchronously -- on a
   // cold start (e.g. a push notification/deep link landing directly here)
@@ -218,9 +220,18 @@ export const BookingDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
   // auto-refunds here, since there's no real gateway configured to reverse
   // a charge through. Surface that plainly instead of pretending nothing
   // needs following up.
-  const showRefundNote = booking.status === 'cancelled' && paymentStatus === 'paid';
+  //
+  // REFUND VISIBILITY FIX -- this only ever checked 'cancelled', but an
+  // owner rejecting a booking (rejectBooking -> status 'rejected', a
+  // DIFFERENT status from 'cancelled' -- see BookingsContext) leaves a
+  // renter's payment sitting at 'paid' with the exact same refund-owed
+  // situation and NO note shown at all -- a real gap, not a display
+  // preference, since 'rejected' only happens before a booking is
+  // confirmed and is therefore the most common paid-then-undone case.
+  const showRefundNote = (booking.status === 'cancelled' || booking.status === 'rejected') && paymentStatus === 'paid';
   const alreadyReviewed = hasReviewedBooking(booking.id);
   const existingReview = getReviewForBooking(booking.id);
+  const alreadyReviewedCustomer = hasReviewedCustomerForBooking(booking.id);
 
   const onViewCustomerProfile = () => {
     navigation.navigate('CustomerProfile', { userId: booking.renterId, carId: booking.carId, carName: car?.name });
@@ -441,6 +452,17 @@ export const BookingDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
             if (result.success && result.request) {
               setExtensionRequests((prev) => [result.request as ExtensionRequest, ...prev]);
               setDraftDropoffDate(null);
+              // BUG FIX -- trip-extension requests never notified anyone;
+              // the other party only ever found out by opening the app.
+              if (car) {
+                await notify({
+                  userId: car.ownerId,
+                  type: 'booking_status',
+                  title: requestType === 'extend' ? 'Trip extension requested' : 'Early return requested',
+                  message: `${customerName} asked to ${actionLabel} for booking ${booking.id} — new return date ${formatShortDate(effectiveDraftDropoff)}.`,
+                  target: { kind: 'booking', id: booking.id },
+                });
+              }
             } else if (result.error) {
               Alert.alert("Couldn't Send Request", result.error);
             }
@@ -460,6 +482,15 @@ export const BookingDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
           const result = await cancelExtensionRequest(request.id);
           if (result.success) {
             setExtensionRequests((prev) => prev.map((r) => (r.id === request.id ? { ...r, status: 'cancelled' } : r)));
+            if (car) {
+              await notify({
+                userId: car.ownerId,
+                type: 'booking_status',
+                title: 'Trip change request withdrawn',
+                message: `${customerName} withdrew their request for booking ${booking.id}.`,
+                target: { kind: 'booking', id: booking.id },
+              });
+            }
           } else if (result.error) {
             Alert.alert("Couldn't Withdraw", result.error);
           }
@@ -490,6 +521,15 @@ export const BookingDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
               prev.map((r) => (r.id === request.id ? { ...r, status: approve ? 'approved' : 'rejected' } : r)),
             );
             if (approve) refreshBookings();
+            await notify({
+              userId: booking.renterId,
+              type: 'booking_status',
+              title: approve ? 'Trip change approved' : 'Trip change declined',
+              message: approve
+                ? `Your request for booking ${booking.id} was approved — new return date ${formatShortDate(request.requestedDropoffDate)}.`
+                : `Your request for booking ${booking.id} was declined.`,
+              target: { kind: 'booking', id: booking.id },
+            });
           } else if (result.error) {
             Alert.alert("Couldn't Respond", result.error);
           }
@@ -558,8 +598,9 @@ export const BookingDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
             <View style={styles.refundNote}>
               <Ionicons name="information-circle-outline" size={15} color={colors.textSecondary} />
               <Text style={styles.refundNoteText}>
-                This booking was paid before it was cancelled. VELORA has no payment gateway connected yet, so refunds
-                for cancelled bookings are handled outside the app for now — message the {isOwnerView ? 'customer' : 'owner'} to arrange one.
+                This booking was paid before it was {booking.status === 'rejected' ? 'declined' : 'cancelled'}. VELORA has no
+                payment gateway connected yet, so refunds are handled outside the app for now — message the{' '}
+                {isOwnerView ? 'customer' : 'owner'} to arrange one.
               </Text>
             </View>
           ) : null}
@@ -732,7 +773,22 @@ export const BookingDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
                 onPress={onMessageCustomer}
                 variant="outline"
                 icon={<Ionicons name="chatbubble-ellipses-outline" size={16} color={colors.textPrimary} />}
+                style={booking.status === 'completed' ? { marginBottom: spacing.sm } : undefined}
               />
+              {booking.status === 'completed' ? (
+                alreadyReviewedCustomer ? (
+                  <View style={styles.reviewedRow}>
+                    <Ionicons name="checkmark-circle" size={16} color={colors.success} />
+                    <Text style={styles.reviewedText}>You rated this customer</Text>
+                  </View>
+                ) : (
+                  <PrimaryButton
+                    label="Rate Customer"
+                    onPress={() => navigation.navigate('RateCustomer', { bookingId: booking.id, customerId: booking.renterId, customerName })}
+                    variant="dark"
+                  />
+                )
+              ) : null}
             </>
           ) : (
             <>

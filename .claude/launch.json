@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "velora-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "velora-web", "run", "dev", "--", "-p", "3100"],
+      "port": 3100
+    }
+  ]
+}

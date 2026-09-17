@@ -10,6 +10,10 @@ export type DeviceLocationResult =
   | { ok: true; label: string }
   | { ok: false; reason: 'permission-denied' | 'unavailable' };
 
+export type DeviceCoordinatesResult =
+  | { ok: true; latitude: number; longitude: number }
+  | { ok: false; reason: 'permission-denied' | 'unavailable' };
+
 // Reads the current permission state WITHOUT showing any OS prompt.
 export const getForegroundPermissionStatus = () => Location.getForegroundPermissionsAsync();
 
@@ -41,6 +45,27 @@ export const detectCurrentLocationLabel = async (): Promise<DeviceLocationResult
       return { ok: false, reason: 'unavailable' };
     }
     return { ok: true, label: parts.join(', ') };
+  } catch {
+    return { ok: false, reason: 'unavailable' };
+  }
+};
+
+// NEAR ME -- the raw GPS fix, with no reverse-geocoding. Added because
+// detectCurrentLocationLabel above deliberately throws its coordinates away
+// after resolving them to a display label, which meant nothing in the app
+// ever had real coordinates to filter by -- "Near Me" degraded to a
+// same-city-name text match instead of an actual 50km-radius search (see
+// HomeScreen.tsx and supabase/migrations/0022_car_geo_coordinates.sql).
+// Same permission-check contract as detectCurrentLocationLabel: assumes
+// permission has already been granted.
+export const detectCurrentCoordinates = async (): Promise<DeviceCoordinatesResult> => {
+  try {
+    const permission = await Location.getForegroundPermissionsAsync();
+    if (!permission.granted) {
+      return { ok: false, reason: 'permission-denied' };
+    }
+    const position = await Location.getCurrentPositionAsync({});
+    return { ok: true, latitude: position.coords.latitude, longitude: position.coords.longitude };
   } catch {
     return { ok: false, reason: 'unavailable' };
   }

@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Image, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
@@ -12,7 +12,7 @@ import { useAuth } from '../../context/AuthContext';
 import { isValidIndianPhone } from '../../utils/format';
 import { getProfileCompleteness } from '../../utils/profile';
 import { showToast } from '../../utils/toast';
-import { isStaleLocalFileMessage, readUriAsBlobWithRetry, STALE_LOCAL_PHOTO_MESSAGE, uploadAvatar } from '../../utils/uploadImage';
+import { isRetryableMessage, isStaleLocalFileMessage, readUriAsBlobWithRetry, STALE_LOCAL_PHOTO_MESSAGE, uploadAvatar } from '../../utils/uploadImage';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'EditProfile'>;
 
@@ -140,13 +140,23 @@ export const EditProfileScreen: React.FC<Props> = ({ navigation }) => {
       // of which a "check your connection" retry actually fixes.
       const isStalePhoto = isStaleLocalFileMessage(message);
       const isSessionError = /session has expired/i.test(message);
+      const isNetworkIssue = isRetryableMessage(message);
       Alert.alert(
         "Couldn't save changes",
         isStalePhoto
           ? 'Selected photo is no longer available. Please choose it again.'
           : isSessionError
             ? 'Your session expired. Please log in again and retry.'
-            : 'Please check your connection and try again.',
+            : isNetworkIssue
+              ? 'Please check your connection and try again.'
+              // BUG FIX -- any OTHER error (an RLS/permission rejection, a
+              // missing storage bucket, a Postgres constraint, ...) used to
+              // fall through to the same "check your connection" text even
+              // though the actual problem was never the network -- that
+              // false diagnosis was the real bug: it hid what was actually
+              // wrong from both the user and anyone debugging it. Shows the
+              // real message instead of guessing.
+              : `Something went wrong: ${message}`,
       );
     } finally {
       setSaving(false);
@@ -154,7 +164,10 @@ export const EditProfileScreen: React.FC<Props> = ({ navigation }) => {
   };
 
   return (
-    <View style={{ flex: 1, backgroundColor: colors.background }}>
+    <KeyboardAvoidingView
+      style={{ flex: 1, backgroundColor: colors.background }}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+    >
       <ScreenHeader title="Edit Profile" onBack={() => navigation.goBack()} />
 
       <ScrollView contentContainerStyle={{ padding: spacing.lg }} keyboardShouldPersistTaps="handled">
@@ -216,7 +229,7 @@ export const EditProfileScreen: React.FC<Props> = ({ navigation }) => {
           style={{ marginTop: spacing.md }}
         />
       </ScrollView>
-    </View>
+    </KeyboardAvoidingView>
   );
 };
 

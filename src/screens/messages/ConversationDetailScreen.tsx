@@ -1,18 +1,20 @@
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, FlatList, KeyboardAvoidingView, Linking, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import { createAudioPlayer } from 'expo-audio';
+import * as Location from 'expo-location';
 import { RootStackParamList } from '../../navigation/types';
 import { colors, radii, spacing, typography } from '../../theme';
 import { useAuth } from '../../context/AuthContext';
 import { useMessages } from '../../context/MessagesContext';
-import { useVoiceRecorder } from '../../hooks/useVoiceRecorder';
+import { useNotifications } from '../../context/NotificationsContext';
 import { supabase } from '../../lib/supabase';
 import { ScreenHeader } from '../../components/ScreenHeader';
 import { EmptyState } from '../../components/EmptyState';
 import { ChatMessage, Conversation } from '../../types';
+import { detectOffPlatformContact, OFF_PLATFORM_WARNING_TITLE, OFF_PLATFORM_WARNING_BODY, OffPlatformContactType } from '../../utils/contactDetection';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ConversationDetail'>;
 
@@ -68,10 +70,28 @@ const VoiceMessageBubble: React.FC<{ path: string; mine: boolean }> = ({ path, m
   );
 };
 
+// A one-time, user-chosen location card -- never live/continuous tracking.
+// attachmentUrl stores "<lat>,<lng>" (see onShareLocation below). Opens the
+// device's own maps app on tap; no in-app map view needed for a single pin.
+const LocationMessageBubble: React.FC<{ coords: string; mine: boolean }> = ({ coords, mine }) => {
+  const onOpen = () => {
+    const [lat, lng] = coords.split(',');
+    if (!lat || !lng) return;
+    Linking.openURL(`https://maps.google.com/?q=${lat},${lng}`).catch(() => {});
+  };
+  return (
+    <Pressable onPress={onOpen} style={styles.voiceRow} accessibilityLabel="Open shared location in maps">
+      <Ionicons name="location" size={22} color={mine ? colors.primary : colors.textSecondary} />
+      <Text style={mine ? styles.bubbleTextMe : styles.bubbleTextThem}>View shared location</Text>
+    </Pressable>
+  );
+};
+
 export const ConversationDetailScreen: React.FC<Props> = ({ route, navigation }) => {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const { getConversation, findConversation, sendMessage, markRead } = useMessages();
+  const { getForUser: getNotificationsForUser, markRead: markNotificationRead } = useNotifications();
   const [conversationId, setConversationId] = useState(route.params.conversationId);
   const rawConversation = conversationId ? getConversation(conversationId) : undefined;
   // Final-verification fix -- getConversation(id) resolves ANY conversation
@@ -86,7 +106,7 @@ export const ConversationDetailScreen: React.FC<Props> = ({ route, navigation })
       : undefined;
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
-  const voiceRecorder = useVoiceRecorder();
+  const [sharingLocation, setSharingLocation] = useState(false);
 
   // A fresh thread (no conversationId yet) happens when either a renter
   // taps "Message Owner" (from Car Details/an owner's profile) or an owner
@@ -134,6 +154,19 @@ export const ConversationDetailScreen: React.FC<Props> = ({ route, navigation })
     if (conversation && user) markRead(conversation.id, user.role);
   }, [conversation, user?.role]);
 
+  useEffect(() => {
+    // BELL-BADGE FIX -- opening this thread only ever cleared the
+    // conversation's own unread state (above), never the matching
+    // notifications-table row(s) (see MessagesContext.ts:394's
+    // `target: { kind: 'conversation', id }`), so the bell kept showing a
+    // message as unread even after the person had already read it here
+    // instead of tapping through from the Notifications screen.
+    if (!conversation || !user) return;
+    getNotificationsForUser(user.id)
+      .filter((n) => !n.read && n.target?.kind === 'conversation' && n.target.id === conversation.id)
+      .forEach((n) => markNotificationRead(n.id));
+  }, [conversation, user?.id]);
+
   if (!user) return null;
 
   const partnerName = conversation
@@ -161,11 +194,46 @@ export const ConversationDetailScreen: React.FC<Props> = ({ route, navigation })
     );
   }
 
-  const onSend = async () => {
+  const onSend = () => {
     if (!draft.trim() || sending) return;
-    setSending(true);
     const text = draft.trim();
+    const flagged = detectOffPlatformContact(text);
+    if (flagged) {
+      Alert.alert(OFF_PLATFORM_WARNING_TITLE, OFF_PLATFORM_WARNING_BODY, [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Send Anyway', style: 'destructive', onPress: () => performSend(text, flagged) },
+      ]);
+      return;
+    }
+    performSend(text, null);
+  };
+
+  const performSend = async (text: string, flaggedAs: OffPlatformContactType | null) => {
+    setSending(true);
     setDraft('');
+
+    // AUDIT TRAIL -- a message the sender chose to send anyway despite the
+    // off-platform-contact warning is auto-filed into the existing
+    // `reports` table (same table/RLS ReportScreen already uses) so admin
+    // has visibility into commission-bypass attempts. Best-effort: never
+    // blocks the actual message send if this fails. Only filed when a real
+    // conversation already exists -- a brand-new thread has no id yet at
+    // this point.
+    if (flaggedAs && conversation) {
+      supabase
+        .from('reports')
+        .insert({
+          reporter_id: user.id,
+          target_kind: 'conversation',
+          target_id: conversation.id,
+          target_label: partnerName,
+          reason: `off_platform_contact_${flaggedAs}`,
+          details: 'Auto-filed: sender chose to send a message flagged as containing contact info after being warned.',
+        })
+        .then(({ error }) => {
+          if (error) console.log(`VELORA_OFF_PLATFORM_REPORT_ERROR: ${error.message}`);
+        });
+    }
 
     // MULTI-DEVICE MIGRATION -- sendMessage now writes to Supabase and can
     // genuinely throw (a network hiccup, a race on starting a new thread).
@@ -220,44 +288,40 @@ export const ConversationDetailScreen: React.FC<Props> = ({ route, navigation })
     }
   };
 
-  // Voice note mic button. Only available once a real conversation exists --
-  // a fresh (not-yet-created) thread has no conversationId yet to file the
-  // recording's storage path under, and starting one purely from a voice
-  // note (skipping the text-based startInfo flow above) isn't a real entry
-  // point anywhere in the app today.
-  const onMicPress = async () => {
-    if (voiceRecorder.state === 'idle') {
-      const started = await voiceRecorder.startRecording();
-      if (!started) {
-        Alert.alert('Microphone access needed', 'Allow microphone access to send a voice message.');
-      }
-      return;
-    }
-    if (voiceRecorder.state === 'recording' && conversation) {
-      const path = await voiceRecorder.stopAndUpload(conversation.id);
-      if (!path) {
-        Alert.alert("Couldn't send voice message", 'Please check your connection and try again.');
+  // Location sharing -- one-time, user-initiated, never automatic/live
+  // tracking. Only available once a real conversation exists, same
+  // constraint the old mic button had (a fresh, not-yet-created thread has
+  // no conversationId to attach the message to).
+  const onShareLocation = async () => {
+    if (!conversation || sharingLocation) return;
+    setSharingLocation(true);
+    try {
+      const permission = await Location.requestForegroundPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert('Location access needed', 'Allow location access to share your current location.');
         return;
       }
-      try {
-        await sendMessage({
-          conversationId: conversation.id,
-          senderId: user.id,
-          senderRole: user.role,
-          text: '🎤 Voice message',
-          attachmentUrl: path,
-          attachmentType: 'audio',
-        });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Unknown error';
-        console.log(`VELORA_SEND_VOICE_FAILED: ${message}`);
-        Alert.alert("Couldn't send voice message", 'Please check your connection and try again.');
-      }
+      const position = await Location.getCurrentPositionAsync({});
+      const coords = `${position.coords.latitude},${position.coords.longitude}`;
+      await sendMessage({
+        conversationId: conversation.id,
+        senderId: user.id,
+        senderRole: user.role,
+        text: '📍 Location shared',
+        attachmentUrl: coords,
+        attachmentType: 'location',
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      console.log(`VELORA_SHARE_LOCATION_FAILED: ${message}`);
+      Alert.alert("Couldn't share location", 'Please check your connection and try again.');
+    } finally {
+      setSharingLocation(false);
     }
   };
 
   return (
-    <KeyboardAvoidingView style={{ flex: 1, backgroundColor: colors.background }} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={insets.top}>
+    <KeyboardAvoidingView style={{ flex: 1, backgroundColor: colors.background }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={insets.top}>
       <ScreenHeader
         title={partnerName}
         onBack={() => navigation.goBack()}
@@ -286,6 +350,8 @@ export const ConversationDetailScreen: React.FC<Props> = ({ route, navigation })
               <View style={[styles.bubble, mine ? styles.bubbleMe : styles.bubbleThem]}>
                 {item.attachmentType === 'audio' && item.attachmentUrl ? (
                   <VoiceMessageBubble path={item.attachmentUrl} mine={mine} />
+                ) : item.attachmentType === 'location' && item.attachmentUrl ? (
+                  <LocationMessageBubble coords={item.attachmentUrl} mine={mine} />
                 ) : (
                   <Text style={mine ? styles.bubbleTextMe : styles.bubbleTextThem}>{item.text}</Text>
                 )}
@@ -300,54 +366,31 @@ export const ConversationDetailScreen: React.FC<Props> = ({ route, navigation })
       />
 
       <View style={[styles.inputRow, { paddingBottom: insets.bottom + spacing.sm }]}>
-        {voiceRecorder.state === 'recording' ? (
-          <>
-            <View style={[styles.input, styles.recordingIndicator]}>
-              <View style={styles.recordingDot} />
-              <Text style={styles.recordingText}>Recording…</Text>
-            </View>
-            <Pressable
-              style={[styles.sendBtn, styles.cancelBtn]}
-              onPress={voiceRecorder.cancelRecording}
-              accessibilityLabel="Cancel recording"
-            >
-              <Ionicons name="close" size={18} color={colors.textSecondary} />
-            </Pressable>
-            <Pressable style={styles.sendBtn} onPress={onMicPress} accessibilityLabel="Stop and send voice message">
-              <Ionicons name="send" size={18} color={colors.onPrimary} />
-            </Pressable>
-          </>
-        ) : (
-          <>
-            <TextInput
-              value={draft}
-              onChangeText={setDraft}
-              placeholder="Type a message..."
-              placeholderTextColor={colors.textTertiary}
-              style={styles.input}
-              onSubmitEditing={onSend}
-              editable={voiceRecorder.state === 'idle'}
-            />
-            {draft.trim().length === 0 && conversation ? (
-              <Pressable
-                style={styles.sendBtn}
-                onPress={onMicPress}
-                disabled={voiceRecorder.state === 'uploading'}
-                accessibilityLabel="Record a voice message"
-              >
-                {voiceRecorder.state === 'uploading' ? (
-                  <ActivityIndicator size="small" color={colors.onPrimary} />
-                ) : (
-                  <Ionicons name="mic" size={18} color={colors.onPrimary} />
-                )}
-              </Pressable>
+        {conversation ? (
+          <Pressable
+            style={styles.locationBtn}
+            onPress={onShareLocation}
+            disabled={sharingLocation}
+            accessibilityLabel="Share your current location"
+          >
+            {sharingLocation ? (
+              <ActivityIndicator size="small" color={colors.textSecondary} />
             ) : (
-              <Pressable style={styles.sendBtn} onPress={onSend} accessibilityLabel="Send message">
-                <Ionicons name="send" size={18} color={colors.onPrimary} />
-              </Pressable>
+              <Ionicons name="location-outline" size={20} color={colors.textSecondary} />
             )}
-          </>
-        )}
+          </Pressable>
+        ) : null}
+        <TextInput
+          value={draft}
+          onChangeText={setDraft}
+          placeholder="Type a message..."
+          placeholderTextColor={colors.textTertiary}
+          style={styles.input}
+          onSubmitEditing={onSend}
+        />
+        <Pressable style={styles.sendBtn} onPress={onSend} disabled={sending} accessibilityLabel="Send message">
+          {sending ? <ActivityIndicator size="small" color={colors.onPrimary} /> : <Ionicons name="send" size={18} color={colors.onPrimary} />}
+        </Pressable>
       </View>
     </KeyboardAvoidingView>
   );
@@ -389,9 +432,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginLeft: spacing.sm,
   },
-  cancelBtn: { backgroundColor: colors.surface },
-  recordingIndicator: { flexDirection: 'row', alignItems: 'center' },
-  recordingDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: colors.danger, marginRight: spacing.sm },
-  recordingText: { ...typography.bodyMd, color: colors.textPrimary },
+  locationBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: spacing.sm,
+  },
   voiceRow: { flexDirection: 'row', alignItems: 'center' },
 });

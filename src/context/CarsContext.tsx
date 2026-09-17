@@ -103,6 +103,10 @@ interface CarRow {
   buffer_hours: number | null;
   // PHASE 6 -- see supabase/migrations/0007_instant_book.sql.
   instant_book: boolean;
+  // NEAR ME -- see supabase/migrations/0022_car_geo_coordinates.sql. Both
+  // nullable; null for any listing whose owner typed the location manually.
+  latitude: number | null;
+  longitude: number | null;
 }
 
 const rowToCar = (row: CarRow): Car => ({
@@ -150,6 +154,8 @@ const rowToCar = (row: CarRow): Car => ({
   extraKmCharge: row.extra_km_charge ?? undefined,
   bufferHours: row.buffer_hours ?? undefined,
   instantBook: row.instant_book,
+  latitude: row.latitude ?? undefined,
+  longitude: row.longitude ?? undefined,
 });
 
 // PRODUCTION-AUDIT FIX -- every one of these columns is a Postgres `integer`
@@ -214,6 +220,12 @@ const carToRow = (car: Car) => ({
   // one is a plain boolean rather than null-when-unset) -- migration 0007
   // must be run before ANY car save works, exactly like 0003/0004.
   instant_book: car.instantBook === true,
+  // NEAR ME -- see supabase/migrations/0022_car_geo_coordinates.sql. Same
+  // always-include (null when unset) pattern as the Phase 2 columns above --
+  // migration 0022 must be run before ANY car save works, exactly like
+  // 0003/0004/0007.
+  latitude: car.latitude ?? null,
+  longitude: car.longitude ?? null,
 });
 
 export const CarsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -223,6 +235,12 @@ export const CarsProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // with an empty marketplace, and a car only ever appears here the moment
   // an owner account publishes it.
   const [allCars, setAllCars] = useState<Car[]>([]);
+  // SUBSCRIPTION MONETIZATION -- "Subscription Active -> Car Listing
+  // Active -> Website + App visible" (0026_owner_subscriptions.sql). Which
+  // owners among the currently-loaded cars have an active subscription
+  // right now -- refetched whenever the set of owners in `allCars` changes,
+  // never trusted from anything cached on the Car object itself.
+  const [subscribedOwnerIds, setSubscribedOwnerIds] = useState<Set<string>>(new Set());
   const [isLoaded, setIsLoaded] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [filters, setFilters] = useState<FilterState>(defaultFilters);
@@ -277,6 +295,40 @@ export const CarsProvider: React.FC<{ children: React.ReactNode }> = ({ children
       supabase.removeChannel(channel);
     };
   }, []);
+
+  // SUBSCRIPTION MONETIZATION -- runs whenever the actual set of unique
+  // owners changes (not on every allCars re-fetch that happens to have the
+  // same owners), so an owner's cars don't flicker in/out while an
+  // unrelated field on one of them updates.
+  const ownerIdsKey = useMemo(() => Array.from(new Set(allCars.map((c) => c.ownerId))).sort().join(','), [allCars]);
+  // Gates the SAME loading skeleton `isLoaded` already drives -- without
+  // this, HomeScreen would render one real frame of "no cars found" between
+  // allCars resolving and this async subscription check catching up, even
+  // for a marketplace full of correctly-subscribed owners.
+  const [subscriptionCheckLoaded, setSubscriptionCheckLoaded] = useState(false);
+  useEffect(() => {
+    const ownerIds = ownerIdsKey ? ownerIdsKey.split(',') : [];
+    if (ownerIds.length === 0) {
+      setSubscribedOwnerIds(new Set());
+      setSubscriptionCheckLoaded(true);
+      return;
+    }
+    let cancelled = false;
+    supabase
+      .rpc('get_active_subscription_owner_ids', { p_owner_ids: ownerIds })
+      .then(({ data, error }: { data: { owner_id: string }[] | null; error: { message: string } | null }) => {
+        if (cancelled) return;
+        if (error) {
+          console.log(`VELORA_SUBSCRIBED_OWNERS_FETCH_ERROR: ${error.message}`);
+        } else {
+          setSubscribedOwnerIds(new Set((data ?? []).map((row) => row.owner_id)));
+        }
+        setSubscriptionCheckLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [ownerIdsKey]);
 
   const syncCarInventory = async (car: Car): Promise<void> => {
     const quantity = getCarQuantity(car);
@@ -363,13 +415,18 @@ export const CarsProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setAllCars((prev) => prev.map((c) => (c.id === carId ? updated : c)));
   };
 
-  // Only cars the owner has left visible ever reach a renter's search,
-  // listing, favorites, or recommendations — `isActive === false` is the
-  // only thing that hides a car, and toggling it never touches any existing
-  // booking made on that car. `isActive` undefined/true both count as
-  // visible, so every listing created before this field existed keeps
-  // showing exactly as it did before.
-  const activeCars = useMemo(() => allCars.filter((c) => c.isActive !== false), [allCars]);
+  // Only cars the owner has left visible AND whose owner currently has an
+  // active subscription ever reach a renter's search, listing, favorites,
+  // or recommendations. `isActive === false` (undefined/true both count as
+  // visible) is the owner's own manual toggle, unchanged behavior from
+  // before this field existed; the subscription check is new (see
+  // subscribedOwnerIds above) -- a lapsed subscription hides that owner's
+  // cars from renters exactly like the owner switching them off would,
+  // without touching isActive itself or any existing booking.
+  const activeCars = useMemo(
+    () => allCars.filter((c) => c.isActive !== false && subscribedOwnerIds.has(c.ownerId)),
+    [allCars, subscribedOwnerIds],
+  );
 
   const brandNameOf = (brandId: string) => brands.find((b) => b.id === brandId)?.name ?? brandId;
 
@@ -417,7 +474,7 @@ export const CarsProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // own cars — active or not — and any existing car/booking detail
       // route keeps resolving even after the car is toggled inactive.
       cars: activeCars,
-      isLoaded,
+      isLoaded: isLoaded && subscriptionCheckLoaded,
       searchQuery,
       setSearchQuery,
       filters,
@@ -435,7 +492,7 @@ export const CarsProvider: React.FC<{ children: React.ReactNode }> = ({ children
       syncCarInventory,
       refreshCars: fetchCars,
     }),
-    [isLoaded, searchQuery, filters, activeCars, allCars, filteredCars, activeFilterCount],
+    [isLoaded, subscriptionCheckLoaded, searchQuery, filters, activeCars, allCars, filteredCars, activeFilterCount],
   );
 
   return <CarsContext.Provider value={value}>{children}</CarsContext.Provider>;

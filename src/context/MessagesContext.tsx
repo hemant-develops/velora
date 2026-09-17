@@ -33,12 +33,13 @@ export interface SendMessageInput {
   senderId: string;
   senderRole: UserRole;
   text: string;
-  // Set together when sending a recorded voice note (see
-  // ConversationDetailScreen's mic button / useVoiceRecorder). `text` should
-  // still be a short human label ("🎤 Voice message") in that case, not
-  // empty, so every existing preview/notification path keeps working as-is.
+  // Set together for a voice note (legacy, still playable) or a shared
+  // location card (new -- see ConversationDetailScreen's location-share
+  // button). `text` should still be a short human label ("🎤 Voice
+  // message", "📍 Location shared") in either case, not empty, so every
+  // existing preview/notification path keeps working as-is.
   attachmentUrl?: string;
-  attachmentType?: 'audio';
+  attachmentType?: 'audio' | 'location';
 }
 
 interface MessagesContextValue {
@@ -159,7 +160,8 @@ export const MessagesProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           text: row.text,
           createdAt: row.created_at,
           attachmentUrl: row.attachment_url ?? undefined,
-          attachmentType: row.attachment_type === 'audio' ? 'audio' : undefined,
+          attachmentType:
+            row.attachment_type === 'audio' ? 'audio' : row.attachment_type === 'location' ? 'location' : undefined,
         });
       }
 

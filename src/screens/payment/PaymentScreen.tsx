@@ -48,7 +48,11 @@ export const PaymentScreen: React.FC<Props> = ({ route, navigation }) => {
   // the discount amount for display is just the gap between the
   // pre-discount sum and the stored total.
   const discount = booking ? Math.max(booking.subtotal + booking.taxes + booking.serviceFee - booking.total, 0) : 0;
-  const [method, setMethod] = useState<PaymentMethodKey>('upi');
+  // PAYMENT METHODS FIX -- pre-select whatever default the person picked on
+  // the Payment Methods screen (see AppUser.preferredPaymentMethod) instead
+  // of always starting on UPI regardless of what they normally use. Falls
+  // back to 'upi' for anyone who's never set one, unchanged from before.
+  const [method, setMethod] = useState<PaymentMethodKey>(user?.preferredPaymentMethod ?? 'upi');
   const [processing, setProcessing] = useState(false);
   // M10 -- the last attempt's outcome, shown inline instead of only a
   // one-shot Alert, so a failed attempt reads as a clear, persistent state
@@ -113,19 +117,28 @@ export const PaymentScreen: React.FC<Props> = ({ route, navigation }) => {
           setProcessing(false);
           return;
         }
-        await recordPaymentResult({
+        // BUG FIX -- the wallet debit above already happened for real; if
+        // this record write fails, the renter must NOT be shown a
+        // confirmation screen for a payment the booking row doesn't
+        // actually reflect yet.
+        const recorded = await recordPaymentResult({
           bookingId: booking.id,
           paymentMethod: methodLabel,
           status: 'paid',
           transactionId: `WALLET-${booking.id}`,
         });
+        if (!recorded) {
+          setLastError('Your wallet was charged, but we could not update the booking. Please contact support before paying again.');
+          setProcessing(false);
+          return;
+        }
         navigation.replace('BookingConfirmation', { bookingId: booking.id });
         return;
       }
 
       const result = await processPayment({ bookingId: booking.id, method, amount: booking.total });
       if (result.success) {
-        await recordPaymentResult({
+        const recorded = await recordPaymentResult({
           bookingId: booking.id,
           paymentMethod: methodLabel,
           // Cash/Pay Later is never actually charged now -- it stays
@@ -133,6 +146,11 @@ export const PaymentScreen: React.FC<Props> = ({ route, navigation }) => {
           status: method === 'cash' ? 'unpaid' : 'paid',
           transactionId: result.transactionId,
         });
+        if (!recorded) {
+          setLastError("Payment went through, but we couldn't update the booking. Please try again or contact support.");
+          setProcessing(false);
+          return;
+        }
         navigation.replace('BookingConfirmation', { bookingId: booking.id });
         return;
       }

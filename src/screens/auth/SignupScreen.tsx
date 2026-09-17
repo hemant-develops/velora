@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Image, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Image, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
@@ -64,14 +64,27 @@ export const SignupScreen: React.FC<Props> = ({ navigation }) => {
       // the verification modal instead of silently doing nothing, which
       // would look like the button didn't work.
       setShowVerificationModal(true);
+    } else if (role === 'owner') {
+      // SECURITY FIX -- signup() no longer grants role='owner' directly
+      // (see its own comment) -- a session was issued and this person
+      // picked "I'm an owner" here. This screen is about to unmount as
+      // AppNavigation swaps AuthNavigator for RootNavigator (driven by
+      // the auth-state listener, not this callback), so imperatively
+      // navigating to a RootNavigator-only screen from here isn't
+      // reliable -- an Alert pointing at the existing, already-working
+      // Profile > Become a Rental Owner entry point is.
+      Alert.alert(
+        'One more step',
+        "You're signed in as a renter for now. Complete Owner Verification from Profile to start listing cars.",
+      );
     }
-    // A success with neither `error` nor `info` means a session WAS issued
-    // immediately -- nothing to show here, the auth-state listener already
-    // takes the person into the app.
+    // A success with neither `error` nor `info`, for someone who picked
+    // "renter", means a session WAS issued immediately -- nothing to show
+    // here, the auth-state listener already takes the person into the app.
   };
 
   return (
-    <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+    <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       <ScrollView bounces={false} contentContainerStyle={{ flexGrow: 1 }} keyboardShouldPersistTaps="handled">
         <View style={styles.hero}>
           <Image source={{ uri: heroImages.authHero }} style={StyleSheet.absoluteFill} />

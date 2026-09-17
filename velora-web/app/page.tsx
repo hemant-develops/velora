@@ -1,4 +1,10 @@
+<<<<<<< HEAD
 import { SearchForm } from "@/components/SearchForm";
+=======
+import Link from "next/link";
+import { SearchForm } from "@/components/SearchForm";
+import { PLAY_STORE_URL } from "@/lib/constants";
+>>>>>>> claude/velora-git-supabase-workflow-550a70
 
 const STEPS = [
   { title: "Search", body: "Tell us the car, city, seats or budget you need." },
@@ -39,6 +45,39 @@ export default function HomePage() {
           ))}
         </div>
       </section>
+<<<<<<< HEAD
+=======
+
+      <section className="bg-neutral-900 px-4 py-14 sm:px-6">
+        <div className="mx-auto flex max-w-4xl flex-col items-center gap-5 text-center">
+          <h2 className="text-2xl font-bold text-white sm:text-3xl">Booking happens in the VELORA app</h2>
+          <p className="max-w-xl text-sm text-neutral-300 sm:text-base">
+            Message the owner, get instant updates and complete your booking — all inside the free VELORA app.
+          </p>
+          <a
+            href={PLAY_STORE_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="rounded-lg bg-white px-6 py-3 text-sm font-semibold text-neutral-900 transition-transform hover:scale-[1.03]"
+          >
+            Download the VELORA App
+          </a>
+        </div>
+      </section>
+
+      <section className="mx-auto max-w-4xl px-4 py-14 text-center sm:px-6">
+        <h2 className="text-2xl font-bold text-neutral-900">Have a car sitting idle?</h2>
+        <p className="mx-auto mt-2 max-w-lg text-sm text-neutral-600">
+          Subscribe as a VELORA Car Owner to get your own store page, discoverable in search and on Google.
+        </p>
+        <Link
+          href="/login?redirect=/account"
+          className="mt-5 inline-block rounded-lg bg-amber-400 px-6 py-3 text-sm font-semibold text-neutral-900 transition-colors hover:bg-amber-500"
+        >
+          Become a Car Owner
+        </Link>
+      </section>
+>>>>>>> claude/velora-git-supabase-workflow-550a70
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
@@ -13,6 +13,7 @@ import { FallbackImage } from '../../components/FallbackImage';
 import { useAuth } from '../../context/AuthContext';
 import { useCars } from '../../context/CarsContext';
 import { useBookings } from '../../context/BookingsContext';
+import { supabase } from '../../lib/supabase';
 import { formatCurrency, formatShortDate } from '../../utils/format';
 import { CANCELLATION_POLICY_TEXT } from '../../utils/policy';
 
@@ -63,6 +64,17 @@ export const RentalAgreementScreen: React.FC<Props> = ({ route, navigation }) =>
   // booking changes after this point.
   const onSign = async () => {
     if (!canSign || submitting) return;
+    // PHONE IDENTITY BINDING -- a UI-level gate only (createBooking itself
+    // is untouched below); a renter with no Supabase-Auth-verified phone
+    // on their account cannot start the booking that would otherwise be
+    // created here. See AuthContext.phoneVerification / PhoneVerificationScreen.
+    if (!user.phoneVerification?.verified) {
+      Alert.alert('Verify your phone to continue', 'For marketplace trust and safety, verify your phone number before booking.', [
+        { text: 'Not now', style: 'cancel' },
+        { text: 'Verify Phone', onPress: () => navigation.navigate('PhoneVerification') },
+      ]);
+      return;
+    }
     setSubmitting(true);
     try {
       const booking = await createBooking({
@@ -86,6 +98,18 @@ export const RentalAgreementScreen: React.FC<Props> = ({ route, navigation }) =>
         agreementSignedBy: signature.trim(),
         agreementSignedAt: new Date().toISOString(),
       });
+      // ADMIN CONNECT -- records real usage against the admin-managed promo
+      // code exactly once, now that the booking this discount actually
+      // applied to is confirmed created. Best-effort: a failure here must
+      // never block a booking that has already been created and already
+      // has its discount baked into draft.total (same fire-and-forget
+      // tolerance already used elsewhere for non-critical side effects,
+      // e.g. CarsContext.syncCarInventory's own catch).
+      if (draft.promoCode) {
+        supabase.rpc('redeem_promo_code', { p_code: draft.promoCode }).then(({ error }) => {
+          if (error) console.log(`VELORA_PROMO_REDEEM_ERROR code=${draft.promoCode} message=${error.message}`);
+        });
+      }
       navigation.navigate('Payment', { bookingId: booking.id });
     } catch (error) {
       // Most likely a date-overlap/fully-booked rejection from
@@ -100,7 +124,10 @@ export const RentalAgreementScreen: React.FC<Props> = ({ route, navigation }) =>
   };
 
   return (
-    <View style={{ flex: 1, backgroundColor: colors.background }}>
+    <KeyboardAvoidingView
+      style={{ flex: 1, backgroundColor: colors.background }}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+    >
       <ScreenHeader title="Rental Agreement" onBack={() => navigation.goBack()} />
 
       <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: FOOTER_CLEARANCE }} showsVerticalScrollIndicator={false}>
@@ -208,7 +235,7 @@ export const RentalAgreementScreen: React.FC<Props> = ({ route, navigation }) =>
           loading={submitting}
         />
       </View>
-    </View>
+    </KeyboardAvoidingView>
   );
 };
 
