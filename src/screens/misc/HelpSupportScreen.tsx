@@ -24,7 +24,7 @@ type Props = NativeStackScreenProps<RootStackParamList, 'HelpSupport'>;
 const FAQS = [
   { question: 'How do I cancel a booking?', answer: 'Go to My Rents, open the booking, and choose Cancel Booking (up to 24 hours before pickup for a full refund).' },
   { question: 'What documents do I need?', answer: "A valid driver's license and a government ID are required at pickup." },
-  { question: 'How do I list my own car?', answer: 'Sign up as a Rental Owner or switch roles from your Profile, then use "List a Car".' },
+  { question: 'How do I list my own car?', answer: 'Sign up as a Car Owner or switch roles from your Profile, then use "List a Car".' },
   { question: 'Is a security deposit required?', answer: 'VELORA is currently running in demo payment mode, so no card-based deposit is charged through the app. If a deposit is needed, agree on it directly with the owner before pickup.' },
   { question: 'How do I talk to the owner or renter on a booking?', answer: 'Open the booking from My Rents (or Listings, for owners) and use Message Owner / Message Customer. Every conversation is also visible from the Messages tab.' },
   { question: 'What if the owner or renter is unresponsive?', answer: 'If you can\'t reach the other person about an active or upcoming trip, use "Contact Support" below or the Report option on the booking, listing, or conversation.' },
@@ -63,7 +63,7 @@ export const HelpSupportScreen: React.FC<Props> = ({ navigation }) => {
       '',
       '---',
       user ? `From: ${user.name} (${user.email})` : undefined,
-      user ? `Account role: ${user.role === 'owner' ? 'Rental Owner' : 'Renter'}` : undefined,
+      user ? `Account role: ${user.role === 'owner' ? 'Car Owner' : 'Customer'}` : undefined,
     ].filter(Boolean);
     const url = `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent(mailSubject)}&body=${encodeURIComponent(bodyLines.join('\n'))}`;
     try {

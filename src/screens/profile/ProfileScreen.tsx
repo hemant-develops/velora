@@ -14,14 +14,14 @@ import { PrimaryButton } from '../../components/PrimaryButton';
 import { ProfileCompleteBadge } from '../../components/ProfileCompleteBadge';
 import { formatCurrency, formatDate } from '../../utils/format';
 import { getProfileCompleteness } from '../../utils/profile';
-import { SUPPORT_EMAIL } from '../../utils/policy';
 import { useAppNavigation, useTabBarClearance } from '../../navigation/hooks';
 import { checkForAppUpdateManually } from '../../hooks/useAppUpdatePrompt';
 
 export const ProfileScreen: React.FC = () => {
   const insets = useSafeAreaInsets();
   const tabBarClearance = useTabBarClearance();
-  const { user, logout, switchRole } = useAuth();
+  const { user, logout, switchRole, deactivateAccount } = useAuth();
+  const [deleting, setDeleting] = useState(false);
   const { getCarsByOwner } = useCars();
   const { getBookingsForCars, resetLocalBookingsForTesting } = useBookings();
   const { getUnreadCountForUser } = useNotifications();
@@ -78,20 +78,33 @@ export const ProfileScreen: React.FC = () => {
   };
 
   // Real, working account-deletion entry point (not a decorative screen):
-  // signs the account out immediately (the one part of "delete my account"
-  // VELORA can safely do from the client today), then hands off to a real,
-  // working channel -- the same support inbox HelpSupportScreen's Contact
-  // form uses -- for the actual data-deletion request. A full self-serve
-  // "erase my account from the database" action needs a privileged
-  // server-side call this app doesn't have (and the backend/auth freeze
-  // means one isn't added here) -- flagged plainly rather than faked.
+  // calls deactivate_own_account() (0023_account_deletion.sql), which marks
+  // the account deleted server-side -- AuthContext.loadUserFromSession then
+  // force-signs-out this same account on any future login attempt, closing
+  // the confirmed "deleted account can just log back in" bug -- then signs
+  // this device out. A full "erase every row from the database" action still
+  // needs a privileged server-side call this app doesn't have (see the
+  // support-email fallback in utils/policy.ts's Privacy Policy text), so
+  // that channel stays available for anyone who wants that too.
   const onDeleteAccount = () => {
+    if (deleting) return;
     Alert.alert(
       'Delete Account',
-      `This will sign you out now. To fully delete your account and data from VELORA's systems, email us at ${SUPPORT_EMAIL} from your registered email (${user.email}) and we'll process it.`,
+      'This deletes your VELORA account -- you will be signed out and this email will no longer be able to log in. This cannot be undone from the app. Continue?',
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Sign Out & Continue', style: 'destructive', onPress: logout },
+        {
+          text: 'Delete Account',
+          style: 'destructive',
+          onPress: async () => {
+            setDeleting(true);
+            const result = await deactivateAccount();
+            setDeleting(false);
+            if (!result.success) {
+              Alert.alert("Couldn't delete account", result.error ?? 'Please try again.');
+            }
+          },
+        },
       ],
     );
   };
@@ -133,7 +146,7 @@ export const ProfileScreen: React.FC = () => {
   const onToggleRole = () => {
     const nextRole = isOwner ? 'renter' : 'owner';
     Alert.alert(
-      isOwner ? 'Switch to Renter Mode' : 'Switch to Owner Mode',
+      isOwner ? 'Switch to Customer Mode' : 'Switch to Car Owner Mode',
       isOwner
         ? 'You will see your bookings and browse cars to rent.'
         : 'You will be able to list cars and manage incoming booking requests.',
@@ -170,7 +183,7 @@ export const ProfileScreen: React.FC = () => {
           <Text style={styles.email}>{user.email}</Text>
           <View style={styles.pillRow}>
             <View style={styles.rolePill}>
-              <Text style={styles.roleText}>{isOwner ? 'Rental Owner' : 'Renter'}</Text>
+              <Text style={styles.roleText}>{isOwner ? 'Car Owner' : 'Customer'}</Text>
             </View>
             {completeness.isComplete ? <ProfileCompleteBadge /> : null}
           </View>
@@ -237,14 +250,14 @@ export const ProfileScreen: React.FC = () => {
 
       {isOwner ? (
         <PrimaryButton
-          label="Switch to Renter Mode"
+          label="Switch to Customer Mode"
           onPress={onToggleRole}
           variant="outline"
           style={{ marginBottom: spacing.xl }}
         />
       ) : isVerifiedOwner ? (
         <PrimaryButton
-          label="Switch to Owner Mode"
+          label="Switch to Car Owner Mode"
           onPress={onToggleRole}
           variant="outline"
           style={{ marginBottom: spacing.xl }}
@@ -261,7 +274,7 @@ export const ProfileScreen: React.FC = () => {
           onPress={() => navigation.navigate('OwnerVerification')}
           style={{ marginBottom: spacing.xl }}
           accessibilityRole="button"
-          accessibilityLabel="Become a rental owner"
+          accessibilityLabel="Become a car owner"
         >
           <LinearGradient
             colors={[colors.primary, colors.primaryDark]}
@@ -321,6 +334,12 @@ export const ProfileScreen: React.FC = () => {
           onPress={() => navigation.navigate('Notifications')}
           badgeCount={unreadCount}
         />
+        <ProfileMenuItem
+          icon="call-outline"
+          label="Phone Verification"
+          subtitle={user.phoneVerification?.verified ? 'Verified' : 'Not verified yet'}
+          onPress={() => navigation.navigate('PhoneVerification')}
+        />
         <ProfileMenuItem icon="shield-checkmark-outline" label="Privacy" onPress={() => navigation.navigate('Legal', { kind: 'privacy' })} />
         <ProfileMenuItem icon="document-text-outline" label="Terms & Conditions" onPress={() => navigation.navigate('Legal', { kind: 'terms' })} />
         <ProfileMenuItem icon="help-circle-outline" label="Help & Support" onPress={() => navigation.navigate('HelpSupport')} />
@@ -331,7 +350,12 @@ export const ProfileScreen: React.FC = () => {
           onPress={onCheckForUpdates}
         />
         <ProfileMenuItem icon="log-out-outline" label="Logout" onPress={onLogout} destructive />
-        <ProfileMenuItem icon="trash-outline" label="Delete Account" onPress={onDeleteAccount} destructive />
+        <ProfileMenuItem
+          icon="trash-outline"
+          label={deleting ? 'Deleting…' : 'Delete Account'}
+          onPress={onDeleteAccount}
+          destructive
+        />
       </View>
 
       {__DEV__ && resetLocalBookingsForTesting ? (

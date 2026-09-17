@@ -220,7 +220,15 @@ export const BookingDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
   // auto-refunds here, since there's no real gateway configured to reverse
   // a charge through. Surface that plainly instead of pretending nothing
   // needs following up.
-  const showRefundNote = booking.status === 'cancelled' && paymentStatus === 'paid';
+  //
+  // REFUND VISIBILITY FIX -- this only ever checked 'cancelled', but an
+  // owner rejecting a booking (rejectBooking -> status 'rejected', a
+  // DIFFERENT status from 'cancelled' -- see BookingsContext) leaves a
+  // renter's payment sitting at 'paid' with the exact same refund-owed
+  // situation and NO note shown at all -- a real gap, not a display
+  // preference, since 'rejected' only happens before a booking is
+  // confirmed and is therefore the most common paid-then-undone case.
+  const showRefundNote = (booking.status === 'cancelled' || booking.status === 'rejected') && paymentStatus === 'paid';
   const alreadyReviewed = hasReviewedBooking(booking.id);
   const existingReview = getReviewForBooking(booking.id);
 
@@ -589,8 +597,9 @@ export const BookingDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
             <View style={styles.refundNote}>
               <Ionicons name="information-circle-outline" size={15} color={colors.textSecondary} />
               <Text style={styles.refundNoteText}>
-                This booking was paid before it was cancelled. VELORA has no payment gateway connected yet, so refunds
-                for cancelled bookings are handled outside the app for now — message the {isOwnerView ? 'customer' : 'owner'} to arrange one.
+                This booking was paid before it was {booking.status === 'rejected' ? 'declined' : 'cancelled'}. VELORA has no
+                payment gateway connected yet, so refunds are handled outside the app for now — message the{' '}
+                {isOwnerView ? 'customer' : 'owner'} to arrange one.
               </Text>
             </View>
           ) : null}

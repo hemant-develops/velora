@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
@@ -85,7 +85,10 @@ export const ReviewScreen: React.FC<Props> = ({ route, navigation }) => {
   };
 
   return (
-    <View style={{ flex: 1, backgroundColor: colors.background }}>
+    <KeyboardAvoidingView
+      style={{ flex: 1, backgroundColor: colors.background }}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+    >
       <ScreenHeader title="Rate & Review" onBack={() => navigation.goBack()} />
 
       <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: FOOTER_CLEARANCE }}>
@@ -119,7 +122,7 @@ export const ReviewScreen: React.FC<Props> = ({ route, navigation }) => {
       <View style={[styles.footer, shadows.lg, { paddingBottom: insets.bottom + spacing.md }]}>
         <PrimaryButton label="Submit Review" onPress={onSubmit} loading={saving} />
       </View>
-    </View>
+    </KeyboardAvoidingView>
   );
 };
 

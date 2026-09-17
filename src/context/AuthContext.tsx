@@ -1,10 +1,10 @@
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { Linking, Platform } from 'react-native';
+import { Alert, Linking, Platform } from 'react-native';
 import type { Session } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
-import { AppUser, OwnerVerification, UserRole } from '../types';
+import { AppUser, OwnerVerification, PhoneVerification, UserRole } from '../types';
 import { avatars } from '../data/images';
-import { isValidEmail } from '../utils/format';
+import { isValidEmail, isValidOtp, toE164IndianPhone } from '../utils/format';
 import { storage } from '../utils/storage';
 import { registerForPushNotifications } from '../utils/pushNotifications';
 
@@ -26,6 +26,7 @@ interface ProfileExtras {
   bio?: string;
   location?: string;
   locationSource?: 'gps' | 'manual';
+  preferredPaymentMethod?: AppUser['preferredPaymentMethod'];
 }
 
 // Email-confirmation deep link. Must match app.json's `expo.scheme` ("velora")
@@ -94,6 +95,7 @@ interface AuthContextValue {
     role: UserRole;
   }) => Promise<AuthResult>;
   logout: () => Promise<void>;
+  deactivateAccount: () => Promise<AuthResult>;
   updateProfile: (patch: Partial<AppUser>) => Promise<boolean>;
   switchRole: (role: UserRole) => Promise<AuthResult>;
   // FLAGGED MINIMAL ADDITION: a real "Forgot Password" call, replacing what
@@ -117,6 +119,26 @@ interface AuthContextValue {
   // app on an unchanged password.
   passwordRecoveryPending: boolean;
   updatePassword: (newPassword: string) => Promise<AuthResult>;
+  // PHONE/OTP LOGIN -- uses Supabase Auth's own signInWithOtp/verifyOtp
+  // (phone provider + SMS delivery already configured in the Supabase
+  // dashboard, e.g. via Twilio -- no credential of any kind lives in this
+  // app). Does not touch email/password login at all; this is an
+  // additional sign-in method on the same auth.users table. Neither
+  // function sets `user` state directly -- verifyPhoneOtp's successful
+  // supabase.auth.verifyOtp() call establishes a real session the same way
+  // signInWithPassword does, and the existing onAuthStateChange listener
+  // (already subscribed, already the single source of truth) picks it up
+  // via loadUserFromSession exactly like every other sign-in path.
+  sendPhoneOtp: (phone: string) => Promise<AuthResult>;
+  verifyPhoneOtp: (phone: string, otp: string) => Promise<AuthResult>;
+  // PHONE IDENTITY BINDING -- for an already-signed-in email/Google session
+  // to bind/verify a phone onto THAT SAME account (see the functions' own
+  // comments for why this needs Supabase's separate phone_change API, not
+  // the sign-in one above). Duplicate-phone rejection is enforced by
+  // public.phone_identities' unique constraint, never client-side alone.
+  sendPhoneBindOtp: (phone: string) => Promise<AuthResult>;
+  verifyPhoneBindOtp: (phone: string, otp: string) => Promise<AuthResult>;
+  refreshPhoneVerificationStatus: () => Promise<void>;
   // PRODUCT IMPROVEMENT -- backs the new EmailVerificationModal's "Resend"
   // action. Uses Supabase Auth's own built-in resend endpoint (the same
   // rate-limited, server-managed flow as the original confirmation email) --
@@ -156,6 +178,7 @@ interface ProfileRow {
   full_name: string | null;
   avatar_url: string | null;
   role: string | null;
+  deleted_at: string | null;
 }
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -193,13 +216,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const authUser = session.user;
     const { data, error } = await supabase
       .from('profiles')
-      .select('id, full_name, avatar_url, role')
+      .select('id, full_name, avatar_url, role, deleted_at')
       .eq('id', authUser.id)
       .maybeSingle();
     const profile = data as ProfileRow | null;
 
     if (error) {
       console.log(`VELORA_AUTH_PROFILE_LOAD_ERROR: ${error.message}`);
+    }
+
+    // ACCOUNT DELETION FIX -- confirmed root cause of "deleted account can
+    // just log back in": nothing server-side previously recorded that this
+    // account had been deleted (see deactivate_own_account() /
+    // 0023_account_deletion.sql), so a session establishing successfully via
+    // real Supabase Auth is not, on its own, proof this account should still
+    // be usable. Checked here, on every session load/restore (cold start AND
+    // a fresh sign-in), so a deleted account is force-signed-out again the
+    // moment it's detected rather than only at the point of deletion.
+    if (profile?.deleted_at) {
+      await supabase.auth.signOut();
+      setUser(null);
+      Alert.alert('Account deleted', 'This account has been deleted and can no longer be used. Contact support if this was a mistake.');
+      return;
     }
 
     // SECURITY FIX -- owner verification now comes from the real, admin-
@@ -210,7 +248,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // role='owner' but no row here (e.g. one created before this shipped)
     // now correctly shows 'none' and needs to actually complete
     // verification, same as everyone else.
-    const ownerVerification = await fetchOwnerVerification(authUser.id);
+    const [ownerVerification, phoneVerification] = await Promise.all([
+      fetchOwnerVerification(authUser.id),
+      fetchPhoneVerification(authUser.id),
+    ]);
 
     const extras = profileExtrasRef.current[authUser.id];
 
@@ -229,13 +270,40 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         bio: base?.bio ?? extras?.bio,
         location: base?.location ?? extras?.location ?? '',
         locationSource: base?.locationSource ?? extras?.locationSource,
+        preferredPaymentMethod: base?.preferredPaymentMethod ?? extras?.preferredPaymentMethod,
         avatar: profile?.avatar_url || base?.avatar || avatars.abhishek,
         role,
         ownerVerification,
+        phoneVerification,
       };
       profileCacheRef.current.set(nextUser.id, nextUser);
       return nextUser;
     });
+  };
+
+  // PHONE IDENTITY BINDING -- reads the caller's own row from
+  // public.phone_identities (RLS: user_id = auth.uid() or admin). This
+  // table is only ever written by bind_phone_identity() based on
+  // Supabase Auth's own phone_confirmed_at, never a client claim.
+  const fetchPhoneVerification = async (userId: string): Promise<PhoneVerification> => {
+    const { data, error } = await supabase
+      .from('phone_identities')
+      .select('phone, verified_at')
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (error) {
+      console.log(`VELORA_PHONE_IDENTITY_FETCH_ERROR: ${error.message}`);
+      return { verified: false };
+    }
+    if (!data) return { verified: false };
+    return { verified: true, phone: data.phone, verifiedAt: data.verified_at };
+  };
+
+  // Exposed so PhoneVerificationScreen/Profile can re-check on demand.
+  const refreshPhoneVerificationStatus = async () => {
+    if (!user) return;
+    const phoneVerification = await fetchPhoneVerification(user.id);
+    setUser((prev) => (prev ? { ...prev, phoneVerification } : prev));
   };
 
   // Reads the caller's own row from public.owner_verifications (RLS:
@@ -346,12 +414,33 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
 
+    // SECURITY FIX -- confirmed root cause of "reset-password link logs the
+    // person straight into the app with their OLD password still active".
+    // supabase-js's own 'PASSWORD_RECOVERY' auth event is only ever emitted
+    // by ITS OWN automatic browser-URL session detection; calling
+    // setSession()/exchangeCodeForSession() manually (required here since
+    // React Native has no browser URL for it to auto-detect from) instead
+    // fires the ordinary 'SIGNED_IN' event no matter which kind of
+    // confirmation link this was. Both a signup-confirmation link and a
+    // password-recovery link hit this exact same handler (both redirect to
+    // AUTH_CALLBACK_URL -- see resetPassword/signup above), so without this
+    // check there was no way to tell them apart: the recovery link
+    // established a real session and onAuthStateChange's SIGNED_IN handling
+    // took it straight past AppNavigation's `passwordRecoveryPending` gate
+    // and into the authenticated app, never prompting for a new password.
+    // Supabase includes `type=recovery` on a password-recovery link
+    // specifically (not on signup/magic-link confirmations), which is
+    // exactly the signal `passwordRecoveryPending` needs.
+    const isRecovery = params.get('type') === 'recovery';
+
     const accessToken = params.get('access_token');
     const refreshToken = params.get('refresh_token');
     if (accessToken && refreshToken) {
       const { error } = await supabase.auth.setSession({ access_token: accessToken, refresh_token: refreshToken });
       if (error) {
         console.log(`VELORA_AUTH_CALLBACK_SET_SESSION_ERROR: ${error.message}`);
+      } else if (isRecovery) {
+        setPasswordRecoveryPending(true);
       }
       return;
     }
@@ -361,6 +450,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const { error } = await supabase.auth.exchangeCodeForSession(code);
       if (error) {
         console.log(`VELORA_AUTH_CALLBACK_EXCHANGE_ERROR: ${error.message}`);
+      } else if (isRecovery) {
+        setPasswordRecoveryPending(true);
       }
     }
   };
@@ -462,8 +553,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (actualRole !== role) {
         info =
           actualRole === 'owner'
-            ? 'This account is a verified rental owner — logged in as Owner.'
-            : "This account isn't a verified rental owner yet — logged in as Renter. Apply from Profile > Become a Rental Owner.";
+            ? 'This account is a verified car owner — logged in as Car Owner.'
+            : "This account isn't a verified car owner yet — logged in as Customer. Apply from Profile > Become a Car Owner.";
       }
     }
 
@@ -555,6 +646,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // onAuthStateChange (SIGNED_OUT) clears `user` state.
   };
 
+  // ACCOUNT DELETION FIX -- see deactivate_own_account() / 0023_account_
+  // deletion.sql. Marks the account deleted server-side FIRST (so it can no
+  // longer be logged into again -- loadUserFromSession's deleted_at check
+  // above is what actually enforces that on every future session), then
+  // signs this device out same as a normal logout.
+  const deactivateAccount = async (): Promise<AuthResult> => {
+    if (!user) return { success: false, error: 'Not signed in.' };
+    const { data, error } = await supabase.rpc('deactivate_own_account');
+    if (error) {
+      console.log(`VELORA_AUTH_DEACTIVATE_ERROR: ${error.message}`);
+      return { success: false, error: "Couldn't delete your account right now. Please try again." };
+    }
+    const result = data as { success: boolean; error?: string };
+    if (!result.success) {
+      return { success: false, error: result.error ?? "Couldn't delete your account right now." };
+    }
+    await logout();
+    return { success: true };
+  };
+
   const updateProfile = async (patch: Partial<AppUser>): Promise<boolean> => {
     if (!user) return false;
     const nextUser = { ...user, ...patch };
@@ -570,13 +681,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       patch.phone !== undefined ||
       patch.bio !== undefined ||
       patch.location !== undefined ||
-      patch.locationSource !== undefined
+      patch.locationSource !== undefined ||
+      patch.preferredPaymentMethod !== undefined
     ) {
       await persistProfileExtras(nextUser.id, {
         phone: nextUser.phone,
         bio: nextUser.bio,
         location: nextUser.location,
         locationSource: nextUser.locationSource,
+        preferredPaymentMethod: nextUser.preferredPaymentMethod,
       });
     }
 
@@ -612,7 +725,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // whatever reacts to it.
     if (user.role === role) return { success: true };
     if (role === 'owner' && !isVerifiedOwner(user)) {
-      return { success: false, error: 'Complete Owner Verification from Profile before switching to Owner Mode.' };
+      return { success: false, error: 'Complete Owner Verification from Profile before switching to Car Owner Mode.' };
     }
     const { error } = await supabase.from('profiles').update({ role: appRoleToDbRole(role) }).eq('id', user.id);
     if (error) {
@@ -649,6 +762,122 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, error: error.message };
     }
     setPasswordRecoveryPending(false);
+    return { success: true };
+  };
+
+  // PHONE/OTP LOGIN -- sends the SMS. Supabase creates the auth.users row
+  // on first OTP request for a brand-new phone number (same as it does for
+  // email signup), so this single call covers both "new phone, first
+  // login" and "returning phone" -- there is no separate signup step.
+  const sendPhoneOtp = async (phone: string): Promise<AuthResult> => {
+    const e164 = toE164IndianPhone(phone);
+    if (!e164) {
+      return { success: false, error: 'Enter a valid 10-digit mobile number.' };
+    }
+    const { error } = await supabase.auth.signInWithOtp({ phone: e164 });
+    if (error) {
+      console.log(`VELORA_AUTH_SEND_PHONE_OTP_ERROR: ${error.message}`);
+      // Supabase/Twilio's own error text is already accurate and
+      // actionable here (e.g. rate-limit messages) -- surfaced as-is
+      // rather than replaced with a generic failure.
+      return { success: false, error: error.message };
+    }
+    return { success: true };
+  };
+
+  // PHONE/OTP LOGIN -- verifies the code. On success, Supabase's client
+  // establishes a real session internally; this function deliberately does
+  // NOT call setUser() itself -- onAuthStateChange (subscribed once, in the
+  // effect above) fires SIGNED_IN and runs loadUserFromSession exactly like
+  // it does for signInWithPassword, so there is exactly one code path that
+  // ever turns a Supabase session into `user` state.
+  const verifyPhoneOtp = async (phone: string, otp: string): Promise<AuthResult> => {
+    const e164 = toE164IndianPhone(phone);
+    if (!e164) {
+      return { success: false, error: 'Enter a valid 10-digit mobile number.' };
+    }
+    if (!isValidOtp(otp)) {
+      return { success: false, error: 'Enter the 6-digit code sent to your phone.' };
+    }
+    const { data, error } = await supabase.auth.verifyOtp({ phone: e164, token: otp.trim(), type: 'sms' });
+    if (error) {
+      console.log(`VELORA_AUTH_VERIFY_PHONE_OTP_ERROR: ${error.message}`);
+      return { success: false, error: error.message };
+    }
+    if (data.session?.user.id) {
+      logUserSession('login', data.session.user.id);
+    }
+    // PHONE IDENTITY BINDING -- a phone-login also just confirmed this
+    // exact phone on auth.users (Supabase sets phone_confirmed_at for any
+    // successful verifyOtp, regardless of which flow triggered it), so
+    // record it in phone_identities the same way the bind flow below does.
+    // Awaited (not fire-and-forget) so the explicit state patch after it
+    // always reflects the true end result, regardless of whether the
+    // concurrent onAuthStateChange -> loadUserFromSession happened to run
+    // its own phone_identities read before or after this insert commits.
+    const bindResult = await supabase.rpc('bind_phone_identity');
+    if (bindResult.error) {
+      console.log(`VELORA_BIND_PHONE_IDENTITY_ERROR: ${bindResult.error.message}`);
+    } else if (bindResult.data?.success) {
+      setUser((prev) =>
+        prev ? { ...prev, phoneVerification: { verified: true, phone: e164, verifiedAt: new Date().toISOString() } } : prev,
+      );
+    }
+    return { success: true };
+  };
+
+  // PHONE IDENTITY BINDING -- for an ALREADY authenticated email/Google
+  // session that wants to bind/verify a phone onto the SAME account (not
+  // sign into a different one). Uses Supabase Auth's own phone-change flow
+  // (updateUser + verifyOtp type:'phone_change'), which is what actually
+  // sets auth.users.phone/phone_confirmed_at for the CURRENT user -- this
+  // is a different Supabase API from sendPhoneOtp/verifyPhoneOtp above
+  // (phone-based sign-IN), reused here for phone-based identity BINDING.
+  const sendPhoneBindOtp = async (phone: string): Promise<AuthResult> => {
+    if (!user) return { success: false, error: 'Not signed in.' };
+    const e164 = toE164IndianPhone(phone);
+    if (!e164) {
+      return { success: false, error: 'Enter a valid 10-digit mobile number.' };
+    }
+    const { error } = await supabase.auth.updateUser({ phone: e164 });
+    if (error) {
+      console.log(`VELORA_SEND_PHONE_BIND_OTP_ERROR: ${error.message}`);
+      return { success: false, error: error.message };
+    }
+    return { success: true };
+  };
+
+  const verifyPhoneBindOtp = async (phone: string, otp: string): Promise<AuthResult> => {
+    if (!user) return { success: false, error: 'Not signed in.' };
+    const e164 = toE164IndianPhone(phone);
+    if (!e164) {
+      return { success: false, error: 'Enter a valid 10-digit mobile number.' };
+    }
+    if (!isValidOtp(otp)) {
+      return { success: false, error: 'Enter the 6-digit code sent to your phone.' };
+    }
+    const { error } = await supabase.auth.verifyOtp({ phone: e164, token: otp.trim(), type: 'phone_change' });
+    if (error) {
+      console.log(`VELORA_VERIFY_PHONE_BIND_OTP_ERROR: ${error.message}`);
+      return { success: false, error: error.message };
+    }
+
+    // Confirmed by Supabase Auth at this point (auth.users.phone_confirmed_at
+    // is now set for THIS user) -- bind_phone_identity() reads that directly
+    // (never trusts e164 here) and is where the real duplicate-phone
+    // rejection happens, via phone_identities' unique constraint.
+    const { data, error: bindError } = await supabase.rpc('bind_phone_identity');
+    if (bindError) {
+      console.log(`VELORA_BIND_PHONE_IDENTITY_ERROR: ${bindError.message}`);
+      return { success: false, error: bindError.message };
+    }
+    if (!data?.success) {
+      return { success: false, error: data?.error ?? "Couldn't verify this phone number. Please try again." };
+    }
+
+    setUser((prev) =>
+      prev ? { ...prev, phoneVerification: { verified: true, phone: e164, verifiedAt: new Date().toISOString() } } : prev,
+    );
     return { success: true };
   };
 
@@ -760,11 +989,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       login,
       signup,
       logout,
+      deactivateAccount,
       updateProfile,
       switchRole,
       resetPassword,
       passwordRecoveryPending,
       updatePassword,
+      sendPhoneOtp,
+      verifyPhoneOtp,
+      sendPhoneBindOtp,
+      verifyPhoneBindOtp,
+      refreshPhoneVerificationStatus,
       resendVerificationEmail,
       submitOwnerVerification,
       refreshOwnerVerificationStatus,

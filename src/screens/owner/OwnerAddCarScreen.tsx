@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Alert, Image, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
+import { Alert, Image, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
@@ -13,7 +13,7 @@ import { useAuth } from '../../context/AuthContext';
 import { useCars } from '../../context/CarsContext';
 import { useCatalog } from '../../context/CatalogContext';
 import { generateId } from '../../utils/format';
-import { detectCurrentLocationLabel, requestForegroundPermission } from '../../hooks/useDeviceLocation';
+import { detectCurrentCoordinates, detectCurrentLocationLabel, requestForegroundPermission } from '../../hooks/useDeviceLocation';
 import { getCarQuantity } from '../../utils/inventory';
 import { showToast } from '../../utils/toast';
 import { isStaleLocalFileMessage, PickedImage, readUriAsBlobWithRetry, uploadCarImages } from '../../utils/uploadImage';
@@ -46,7 +46,7 @@ const MAX_PHOTOS = 6;
 export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
   const { user } = useAuth();
   const { addOwnerCar, updateOwnerCar, getCarById } = useCars();
-  const { brands, getModelsForBrand, addManualModel } = useCatalog();
+  const { brands, getModelsForBrand, addManualModel, addManualBrand } = useCatalog();
 
   // Edit mode: when opened with a carId (from "Edit Listing" on the owner
   // dashboard), prefill every field from the real, already-persisted car
@@ -86,6 +86,14 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
   // manual catalog submission, with nothing asked twice.
   const [showManualModelInput, setShowManualModelInput] = useState(false);
   const [manualModelName, setManualModelName] = useState('');
+  // "Can't find your brand? Add manually" -- same escape hatch one level up
+  // (see CatalogContext.addManualBrand / 0024_manual_brand_entry.sql), for
+  // when the curated brand catalog is missing this car's actual brand
+  // entirely (or is empty on an environment where 0001's seed hasn't run
+  // yet) -- without this there was previously NO way to list a car outside
+  // the fixed brand list at all.
+  const [showManualBrandInput, setShowManualBrandInput] = useState(false);
+  const [manualBrandName, setManualBrandName] = useState('');
   const [year, setYear] = useState(existingCar?.year ? String(existingCar.year) : '');
   const [isActive, setIsActive] = useState<boolean>(existingCar?.isActive ?? true);
   const [category, setCategory] = useState<CarCategory>(existingCar?.category ?? 'Sedan');
@@ -106,6 +114,16 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
   // at a different pickup point) or detect the device's current location.
   const [location, setLocation] = useState(existingCar?.location ?? user?.location ?? '');
   const [detectingLocation, setDetectingLocation] = useState(false);
+  // NEAR ME -- captured only via "Use current location" below, never
+  // derivable from the free-text `location` string. Cleared whenever the
+  // owner types the location manually (see onChangeText on the location
+  // InputField) so a listing's coordinates can never silently drift out of
+  // sync with a location the owner has since edited by hand.
+  const [coordinates, setCoordinates] = useState<{ latitude: number; longitude: number } | undefined>(
+    existingCar?.latitude != null && existingCar?.longitude != null
+      ? { latitude: existingCar.latitude, longitude: existingCar.longitude }
+      : undefined,
+  );
   const [description, setDescription] = useState(existingCar?.description ?? '');
   const [rentalModes, setRentalModes] = useState<RentalMode[]>(existingCar?.rentalModes ?? ['self_drive', 'with_driver']);
   // PHASE 2 -- which duration presets this listing offers. Defaults to all
@@ -157,9 +175,14 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
         Alert.alert('Permission needed', 'Allow location access to auto-fill the pickup location.');
         return;
       }
-      const result = await detectCurrentLocationLabel();
-      if (result.ok) {
-        setLocation(result.label);
+      const [labelResult, coordsResult] = await Promise.all([detectCurrentLocationLabel(), detectCurrentCoordinates()]);
+      if (labelResult.ok) {
+        setLocation(labelResult.label);
+        // Coordinates are best-effort on top of the label -- a reverse-geocode
+        // succeeding while the raw GPS fix separately fails is unlikely but
+        // not impossible, and the pickup-location text is still useful on its
+        // own even without a "Near Me" fix for this listing.
+        setCoordinates(coordsResult.ok ? { latitude: coordsResult.latitude, longitude: coordsResult.longitude } : undefined);
       } else {
         Alert.alert('Could not detect location', 'Please enter the pickup location manually.');
       }
@@ -273,7 +296,7 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
     if (!user || saving) return;
     if (images.length === 0) return setError('Add at least one photo of the car.');
     if (!name.trim()) return setError('Please enter a car name.');
-    if (!brandId) return setError('Please select a brand.');
+    if (!brandId && !(showManualBrandInput && manualBrandName.trim())) return setError('Please select or enter a brand.');
     if (!location.trim()) return setError('Enter a pickup location for this car.');
     const price = Number(pricePerDay);
     if (!price || price <= 0) return setError('Enter a valid self-drive price per day.');
@@ -344,6 +367,24 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
     // already used for validation above, and `saving` always resets via
     // `finally` regardless of outcome.
     try {
+      // "Can't find your brand? Add manually" resolves FIRST -- a manual
+      // model (right below) needs a real brand_id to reference, and this is
+      // the only way to get one when the owner never picked a chip at all
+      // (see 0024_manual_brand_entry.sql). Creates exactly one new brands
+      // row (is_custom: true, is_active: false -- pending admin review);
+      // brands RLS is what stops this from ever creating/editing a
+      // canonical, publicly-visible entry.
+      let finalBrandId = brandId;
+      if (showManualBrandInput && manualBrandName.trim()) {
+        const manualBrandResult = await addManualBrand(manualBrandName.trim());
+        if (!manualBrandResult.ok) {
+          setError(manualBrandResult.error);
+          setSaving(false);
+          return;
+        }
+        finalBrandId = manualBrandResult.brandId;
+      }
+
       // PHASE A (Catalog) -- "Can't find your model? Add manually" resolves
       // here, at Save time, using the year/fuel/transmission/seats the
       // owner has already filled in above rather than asking for them a
@@ -354,7 +395,7 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
       let finalModelId = modelId;
       if (showManualModelInput && manualModelName.trim()) {
         const manualResult = await addManualModel({
-          brandId,
+          brandId: finalBrandId,
           name: manualModelName.trim(),
           year: yearNum,
           fuelType,
@@ -384,7 +425,7 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
         // resets or fabricates those.
         await updateOwnerCar(existingCar.id, {
           name: name.trim(),
-          brandId,
+          brandId: finalBrandId,
           modelId: finalModelId,
           year: yearNum,
           category,
@@ -397,6 +438,8 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
           fuelEconomy: fuelEconomy.trim() || '15 km/l',
           seats: seatCount,
           location: location.trim(),
+          latitude: coordinates?.latitude,
+          longitude: coordinates?.longitude,
           rentalModes,
           description: trimmedDescription,
           isActive,
@@ -413,7 +456,7 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
         const newCar: Car = {
           id: generateId('car'),
           name: name.trim(),
-          brandId,
+          brandId: finalBrandId,
           modelId: finalModelId,
           year: yearNum,
           category,
@@ -429,6 +472,8 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
           seats: seatCount,
           features: DEFAULT_FEATURES,
           location: location.trim(),
+          latitude: coordinates?.latitude,
+          longitude: coordinates?.longitude,
           ownerId: user.id,
           rentalModes,
           description: trimmedDescription,
@@ -502,7 +547,10 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
   };
 
   return (
-    <View style={{ flex: 1, backgroundColor: colors.background }}>
+    <KeyboardAvoidingView
+      style={{ flex: 1, backgroundColor: colors.background }}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+    >
       <ScreenHeader title={isEditMode ? 'Edit Car' : 'List a Car'} onBack={() => navigation.goBack()} />
 
       <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: spacing.xxl }} keyboardShouldPersistTaps="handled">
@@ -534,21 +582,56 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
         <InputField label="Car Name" placeholder="e.g. Hyundai Verna" value={name} onChangeText={setName} />
 
         <Text style={styles.label}>Brand</Text>
-        <View style={styles.chipRow}>
-          {brands.map((b) => (
-            <Chip
-              key={b.id}
-              label={b.name}
-              selected={brandId === b.id}
+        {!showManualBrandInput ? (
+          <>
+            <View style={styles.chipRow}>
+              {brands.map((b) => (
+                <Chip
+                  key={b.id}
+                  label={b.isCustom ? `${b.name} (pending review)` : b.name}
+                  selected={brandId === b.id}
+                  onPress={() => {
+                    setBrandId(b.id);
+                    setModelId(undefined);
+                    setShowManualModelInput(false);
+                    setManualModelName('');
+                  }}
+                />
+              ))}
+            </View>
+            <Pressable
               onPress={() => {
-                setBrandId(b.id);
+                setShowManualBrandInput(true);
+                setBrandId('');
                 setModelId(undefined);
-                setShowManualModelInput(false);
-                setManualModelName('');
               }}
-            />
-          ))}
-        </View>
+              hitSlop={6}
+              style={{ marginBottom: spacing.md }}
+            >
+              <Text style={styles.addModelLink}>Can&apos;t find your brand? Add manually</Text>
+            </Pressable>
+          </>
+        ) : (
+          <View style={{ marginBottom: spacing.xs }}>
+            <InputField placeholder="e.g. Force Motors" value={manualBrandName} onChangeText={setManualBrandName} />
+            <Text style={styles.hint}>
+              This brand isn&apos;t in VELORA&apos;s catalog yet — it&apos;ll be reviewed by our team, and you can use it for
+              this listing right away.
+            </Text>
+            {brands.length > 0 ? (
+              <Pressable
+                onPress={() => {
+                  setShowManualBrandInput(false);
+                  setManualBrandName('');
+                }}
+                hitSlop={6}
+                style={{ marginTop: 4, marginBottom: spacing.md }}
+              >
+                <Text style={styles.addModelLink}>Choose from the list instead</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        )}
 
         <Text style={styles.label}>Model</Text>
         {catalogModels.length > 0 && !showManualModelInput ? (
@@ -781,7 +864,15 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
             </Text>
           </Pressable>
         </View>
-        <InputField placeholder="e.g. Jaipur, Rajasthan" leftIcon="location-outline" value={location} onChangeText={setLocation} />
+        <InputField
+          placeholder="e.g. Jaipur, Rajasthan"
+          leftIcon="location-outline"
+          value={location}
+          onChangeText={(text) => {
+            setLocation(text);
+            setCoordinates(undefined);
+          }}
+        />
         <InputField
           label="Description (optional)"
           placeholder="Tell renters about this car..."
@@ -817,7 +908,7 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
           style={{ marginTop: spacing.md }}
         />
       </ScrollView>
-    </View>
+    </KeyboardAvoidingView>
   );
 };
 

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ActivityIndicator, Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Image, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
@@ -128,14 +128,17 @@ export const OwnerVerificationScreen: React.FC<Props> = ({ navigation }) => {
         <View style={styles.centerState}>
           <Ionicons name="shield-checkmark" size={40} color={colors.success} />
           <Text style={styles.introTitle}>You're verified</Text>
-          <Text style={styles.introBody}>Your account is verified — you can list cars and switch to Owner Mode from your profile.</Text>
+          <Text style={styles.introBody}>Your account is verified — you can list cars and switch to Car Owner Mode from your profile.</Text>
         </View>
       </View>
     );
   }
 
   return (
-    <View style={{ flex: 1, backgroundColor: colors.background }}>
+    <KeyboardAvoidingView
+      style={{ flex: 1, backgroundColor: colors.background }}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+    >
       <ScreenHeader title="Owner Verification" onBack={() => navigation.goBack()} />
 
       <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: spacing.xxl }} keyboardShouldPersistTaps="handled">
@@ -208,7 +211,7 @@ export const OwnerVerificationScreen: React.FC<Props> = ({ navigation }) => {
           style={{ marginTop: spacing.md }}
         />
       </ScrollView>
-    </View>
+    </KeyboardAvoidingView>
   );
 };
 

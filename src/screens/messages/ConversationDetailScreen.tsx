@@ -9,6 +9,7 @@ import { RootStackParamList } from '../../navigation/types';
 import { colors, radii, spacing, typography } from '../../theme';
 import { useAuth } from '../../context/AuthContext';
 import { useMessages } from '../../context/MessagesContext';
+import { useNotifications } from '../../context/NotificationsContext';
 import { supabase } from '../../lib/supabase';
 import { ScreenHeader } from '../../components/ScreenHeader';
 import { EmptyState } from '../../components/EmptyState';
@@ -90,6 +91,7 @@ export const ConversationDetailScreen: React.FC<Props> = ({ route, navigation })
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const { getConversation, findConversation, sendMessage, markRead } = useMessages();
+  const { getForUser: getNotificationsForUser, markRead: markNotificationRead } = useNotifications();
   const [conversationId, setConversationId] = useState(route.params.conversationId);
   const rawConversation = conversationId ? getConversation(conversationId) : undefined;
   // Final-verification fix -- getConversation(id) resolves ANY conversation
@@ -151,6 +153,19 @@ export const ConversationDetailScreen: React.FC<Props> = ({ route, navigation })
     // foreign/guessed conversationId can't be marked read either.
     if (conversation && user) markRead(conversation.id, user.role);
   }, [conversation, user?.role]);
+
+  useEffect(() => {
+    // BELL-BADGE FIX -- opening this thread only ever cleared the
+    // conversation's own unread state (above), never the matching
+    // notifications-table row(s) (see MessagesContext.ts:394's
+    // `target: { kind: 'conversation', id }`), so the bell kept showing a
+    // message as unread even after the person had already read it here
+    // instead of tapping through from the Notifications screen.
+    if (!conversation || !user) return;
+    getNotificationsForUser(user.id)
+      .filter((n) => !n.read && n.target?.kind === 'conversation' && n.target.id === conversation.id)
+      .forEach((n) => markNotificationRead(n.id));
+  }, [conversation, user?.id]);
 
   if (!user) return null;
 
@@ -306,7 +321,7 @@ export const ConversationDetailScreen: React.FC<Props> = ({ route, navigation })
   };
 
   return (
-    <KeyboardAvoidingView style={{ flex: 1, backgroundColor: colors.background }} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={insets.top}>
+    <KeyboardAvoidingView style={{ flex: 1, backgroundColor: colors.background }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={insets.top}>
       <ScreenHeader
         title={partnerName}
         onBack={() => navigation.goBack()}

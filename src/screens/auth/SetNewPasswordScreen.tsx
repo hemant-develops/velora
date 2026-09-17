@@ -43,7 +43,7 @@ export const SetNewPasswordScreen: React.FC = () => {
   };
 
   return (
-    <KeyboardAvoidingView style={{ flex: 1, backgroundColor: colors.white }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+    <KeyboardAvoidingView style={{ flex: 1, backgroundColor: colors.white }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       <View style={styles.content}>
         <View style={styles.iconCircle}>
           <Ionicons name={done ? 'checkmark-circle' : 'lock-closed-outline'} size={32} color={done ? colors.success : colors.textPrimary} />

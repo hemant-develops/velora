@@ -48,7 +48,11 @@ export const PaymentScreen: React.FC<Props> = ({ route, navigation }) => {
   // the discount amount for display is just the gap between the
   // pre-discount sum and the stored total.
   const discount = booking ? Math.max(booking.subtotal + booking.taxes + booking.serviceFee - booking.total, 0) : 0;
-  const [method, setMethod] = useState<PaymentMethodKey>('upi');
+  // PAYMENT METHODS FIX -- pre-select whatever default the person picked on
+  // the Payment Methods screen (see AppUser.preferredPaymentMethod) instead
+  // of always starting on UPI regardless of what they normally use. Falls
+  // back to 'upi' for anyone who's never set one, unchanged from before.
+  const [method, setMethod] = useState<PaymentMethodKey>(user?.preferredPaymentMethod ?? 'upi');
   const [processing, setProcessing] = useState(false);
   // M10 -- the last attempt's outcome, shown inline instead of only a
   // one-shot Alert, so a failed attempt reads as a clear, persistent state

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { FlatList, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, FlatList, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { AppHeader } from '../../components/AppHeader';
@@ -21,6 +21,8 @@ import { useNotifications } from '../../context/NotificationsContext';
 import { useAppNavigation, useTabBarClearance } from '../../navigation/hooks';
 import { CarCategory } from '../../types';
 import { SORT_OPTIONS, SortKey, sortCars } from '../../utils/sortCars';
+import { haversineDistanceKm, NEAR_ME_RADIUS_KM } from '../../utils/geo';
+import { detectCurrentCoordinates, requestForegroundPermission } from '../../hooks/useDeviceLocation';
 
 const CATEGORIES: CarCategory[] = [
   'Economy',
@@ -56,7 +58,41 @@ export const HomeScreen: React.FC = () => {
   // filter (same precedent as `selectedCategory` above) rather than a new
   // CarsContext/FilterState field, since it depends on the CURRENT user's own
   // location (AuthContext), not a general filter any screen would reuse.
+  //
+  // NEAR ME RADIUS FIX -- this used to just substring-match the user's
+  // profile city string against each car's own city string, which is not a
+  // 50km-radius search at all (two cities with similar/overlapping names
+  // could false-match, and a real nearby car in a differently-spelled area
+  // would never match). Now takes a live GPS fix each time it's turned on
+  // and filters by real haversine distance -- see utils/geo.ts and
+  // supabase/migrations/0022_car_geo_coordinates.sql.
   const [nearMeOnly, setNearMeOnly] = useState(false);
+  const [nearMeCoords, setNearMeCoords] = useState<{ latitude: number; longitude: number } | undefined>();
+  const [nearMeLoading, setNearMeLoading] = useState(false);
+
+  const onToggleNearMe = async () => {
+    if (nearMeOnly) {
+      setNearMeOnly(false);
+      return;
+    }
+    setNearMeLoading(true);
+    try {
+      const permission = await requestForegroundPermission();
+      if (!permission.granted) {
+        Alert.alert('Location permission needed', 'Allow location access to show cars within 50km of you.');
+        return;
+      }
+      const result = await detectCurrentCoordinates();
+      if (!result.ok) {
+        Alert.alert('Could not detect your location', 'Please try again in a moment.');
+        return;
+      }
+      setNearMeCoords({ latitude: result.latitude, longitude: result.longitude });
+      setNearMeOnly(true);
+    } finally {
+      setNearMeLoading(false);
+    }
+  };
 
   if (!user) return null;
 
@@ -97,15 +133,18 @@ export const HomeScreen: React.FC = () => {
   // behaves identically wherever a renter sees a list of cars.
   let visibleCars = sortCars(availabilityFiltered, sortBy);
 
-  // "Near Me" -- derive the user's own city from the free-text `location`
-  // profile field (e.g. "Bengaluru, Karnataka" -> "Bengaluru") the same way
-  // it's already displayed in AppHeader, and match it against each car's own
-  // `location` string. Case-insensitive substring match keeps this working
-  // whether either string carries a state/country suffix.
-  const userCity = user.location?.split(',')[0]?.trim().toLowerCase() ?? '';
-  const canFilterNearMe = userCity.length > 0;
-  if (nearMeOnly && canFilterNearMe) {
-    visibleCars = visibleCars.filter((c) => c.location.toLowerCase().includes(userCity));
+  // "Near Me" -- real distance filter against the live GPS fix taken when
+  // the chip was turned on (see onToggleNearMe above), not a city-name
+  // guess. A car with no stored coordinates (owner hasn't re-saved their
+  // listing with a device location fix since 0022_car_geo_coordinates.sql)
+  // is excluded rather than guessed into or out of range.
+  if (nearMeOnly && nearMeCoords) {
+    visibleCars = visibleCars.filter(
+      (c) =>
+        c.latitude != null &&
+        c.longitude != null &&
+        haversineDistanceKm(nearMeCoords, { latitude: c.latitude, longitude: c.longitude }) <= NEAR_ME_RADIUS_KM,
+    );
   }
 
   const isSearching = searchQuery.trim().length > 0 || activeFilterCount > 0 || !!selectedCategory || nearMeOnly;
@@ -177,9 +216,7 @@ export const HomeScreen: React.FC = () => {
                 <SectionHeader title={isSearching ? 'Search Results' : 'Find Your Perfect Ride'} />
                 <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                   <Chip label="All" selected={!selectedCategory} onPress={() => setSelectedCategory(null)} />
-                  {canFilterNearMe ? (
-                    <Chip label="Near Me" selected={nearMeOnly} onPress={() => setNearMeOnly((v) => !v)} />
-                  ) : null}
+                  <Chip label={nearMeLoading ? 'Locating…' : 'Near Me'} selected={nearMeOnly} onPress={onToggleNearMe} />
                   {CATEGORIES.map((cat) => (
                     <Chip key={cat} label={cat} selected={selectedCategory === cat} onPress={() => setSelectedCategory((c) => (c === cat ? null : cat))} />
                   ))}
@@ -233,7 +270,7 @@ export const HomeScreen: React.FC = () => {
           <EmptyState
             icon="car-sport-outline"
             title="No cars listed yet"
-            subtitle="Nobody has listed a car for rent yet. Switch to Owner Mode from your Profile to list the very first one!"
+            subtitle="Nobody has listed a car for rent yet. Switch to Car Owner Mode from your Profile to list the very first one!"
           />
         ) : (
           <EmptyState icon="car-outline" title="No cars match your filters" subtitle="Try a different category, clear your search, or adjust your filters." />

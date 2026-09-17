@@ -60,3 +60,18 @@ export const isValidIndianPhone = (phone: string): boolean => {
   const normalized = digitsOnly.replace(/^\+?91/, '').replace(/^0/, '');
   return /^[6-9]\d{9}$/.test(normalized);
 };
+
+// PHONE/OTP LOGIN -- Supabase's phone auth (signInWithOtp/verifyOtp)
+// requires E.164 (e.g. "+919876543210"), not any of the human-friendly
+// forms isValidIndianPhone above already accepts for display/input. Reuses
+// the exact same parsing so "what counts as a valid number" never drifts
+// between the two. Returns null for anything that isn't a valid 10-digit
+// Indian mobile number, same validity rule as isValidIndianPhone.
+export const toE164IndianPhone = (phone: string): string | null => {
+  if (!isValidIndianPhone(phone)) return null;
+  const digitsOnly = phone.replace(/[\s-]/g, '');
+  const normalized = digitsOnly.replace(/^\+?91/, '').replace(/^0/, '');
+  return `+91${normalized}`;
+};
+
+export const isValidOtp = (otp: string): boolean => /^\d{6}$/.test(otp.trim());

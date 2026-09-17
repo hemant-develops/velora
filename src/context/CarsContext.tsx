@@ -103,6 +103,10 @@ interface CarRow {
   buffer_hours: number | null;
   // PHASE 6 -- see supabase/migrations/0007_instant_book.sql.
   instant_book: boolean;
+  // NEAR ME -- see supabase/migrations/0022_car_geo_coordinates.sql. Both
+  // nullable; null for any listing whose owner typed the location manually.
+  latitude: number | null;
+  longitude: number | null;
 }
 
 const rowToCar = (row: CarRow): Car => ({
@@ -150,6 +154,8 @@ const rowToCar = (row: CarRow): Car => ({
   extraKmCharge: row.extra_km_charge ?? undefined,
   bufferHours: row.buffer_hours ?? undefined,
   instantBook: row.instant_book,
+  latitude: row.latitude ?? undefined,
+  longitude: row.longitude ?? undefined,
 });
 
 // PRODUCTION-AUDIT FIX -- every one of these columns is a Postgres `integer`
@@ -214,6 +220,12 @@ const carToRow = (car: Car) => ({
   // one is a plain boolean rather than null-when-unset) -- migration 0007
   // must be run before ANY car save works, exactly like 0003/0004.
   instant_book: car.instantBook === true,
+  // NEAR ME -- see supabase/migrations/0022_car_geo_coordinates.sql. Same
+  // always-include (null when unset) pattern as the Phase 2 columns above --
+  // migration 0022 must be run before ANY car save works, exactly like
+  // 0003/0004/0007.
+  latitude: car.latitude ?? null,
+  longitude: car.longitude ?? null,
 });
 
 export const CarsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {

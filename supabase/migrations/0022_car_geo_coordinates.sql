@@ -1,0 +1,42 @@
+-- 0022_car_geo_coordinates.sql
+-- FEATURE -- Real "Near Me" (50km radius) search.
+--
+-- WHAT THIS DOES
+--   Adds two new, nullable columns to public.car_listings:
+--   `latitude` and `longitude` (double precision). This is the missing
+--   piece for a real distance-based "Near Me" filter -- the app previously
+--   only ever compared free-text city strings (see HomeScreen.tsx's old
+--   `userCity` substring match), which is not a 50km-radius filter at all,
+--   just a same-city-name guess that breaks on any spelling difference.
+--
+--   Nothing reads or writes these columns until the matching app-side
+--   change ships (OwnerAddCarScreen capturing coordinates from
+--   "Use current location", HomeScreen computing haversine distance) --
+--   this migration on its own is a no-op for every existing row (both
+--   columns simply stay null) and changes no existing behavior.
+--
+-- WHAT THIS DELIBERATELY DOES NOT DO
+--   Does not touch any existing column, RLS policy, or grant on
+--   car_listings -- an owner already has UPDATE/INSERT on their own rows,
+--   and a signed-in user already has SELECT on active rows; two new
+--   plain nullable columns need no RLS change to be covered by those same
+--   existing policies. Does not backfill coordinates for existing listings
+--   (no reliable way to derive lat/lng from a free-text location string
+--   server-side) -- an existing car simply won't appear in "Near Me"
+--   results until its owner re-saves it with a device location fix, which
+--   the app-side change surfaces as a normal, non-blocking gap (see
+--   HomeScreen: cars with no coordinates are just excluded, not errored).
+--   Does not add any index -- car_listings is a small, owner-listed
+--   marketplace table (not a large geocoded catalog), so a sequential scan
+--   filtering by is_active first is already fast enough; an index can be
+--   added later without another migration if the table ever grows enough
+--   to need one.
+--
+-- NOT YET APPLIED TO PRODUCTION. Created for review per project workflow
+-- rules.
+--
+-- Safe to re-run: guarded with IF NOT EXISTS.
+
+alter table public.car_listings
+  add column if not exists latitude double precision,
+  add column if not exists longitude double precision;
