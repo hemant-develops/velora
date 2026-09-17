@@ -1,24 +1,16 @@
-<<<<<<< HEAD
-export const SiteFooter: React.FC = () => (
-  <footer className="border-t border-neutral-200 bg-neutral-50">
-    <div className="mx-auto max-w-6xl px-4 py-8 text-sm text-neutral-500 sm:px-6">
-      <p className="font-semibold text-neutral-700">VELORA</p>
-      <p className="mt-1 max-w-xl">
-        VELORA helps you discover rental cars listed by real owners near you. Booking and contacting an owner happens in the
-        VELORA app.
-      </p>
-      <p className="mt-4">© {new Date().getFullYear()} VELORA. All rights reserved.</p>
-=======
-import Link from 'next/link';
-import { PLAY_STORE_URL } from '@/lib/constants';
+import Link from "next/link";
+import { PLAY_STORE_URL } from "@/lib/constants";
 
 export const SiteFooter: React.FC = () => (
   <footer className="border-t border-neutral-200 bg-neutral-50">
     <div className="mx-auto grid max-w-6xl grid-cols-1 gap-8 px-4 py-10 sm:grid-cols-3 sm:px-6">
       <div>
-        <p className="text-lg font-extrabold tracking-tight text-neutral-900">VELORA</p>
+        <p className="text-lg font-extrabold tracking-tight text-neutral-900">
+          VELORA
+        </p>
         <p className="mt-2 max-w-xs text-sm text-neutral-500">
-          Discover rental cars listed by real owners near you. Booking and contacting an owner happens in the VELORA app.
+          Discover rental cars listed by real owners near you. Booking and
+          contacting an owner happens in the VELORA app.
         </p>
       </div>
 
@@ -28,7 +20,10 @@ export const SiteFooter: React.FC = () => (
           <Link href="/search" className="hover:text-neutral-900">
             Browse Cars
           </Link>
-          <Link href="/login?redirect=/account" className="hover:text-neutral-900">
+          <Link
+            href="/login?redirect=/account"
+            className="hover:text-neutral-900"
+          >
             Become a Car Owner
           </Link>
         </div>
@@ -49,7 +44,6 @@ export const SiteFooter: React.FC = () => (
 
     <div className="border-t border-neutral-200 px-4 py-4 text-center text-xs text-neutral-400 sm:px-6">
       © {new Date().getFullYear()} VELORA. All rights reserved.
->>>>>>> claude/velora-git-supabase-workflow-550a70
     </div>
   </footer>
 );

@@ -2,11 +2,7 @@ import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-<<<<<<< HEAD
-import { getCarById, getOwnerProfile } from "@/lib/queries";
-=======
 import { getCarById, getOwnerStoreBySlug } from "@/lib/queries";
->>>>>>> claude/velora-git-supabase-workflow-550a70
 import { parseCarIdFromSlug, buildCarSlug } from "@/lib/slug";
 import { formatCurrency } from "@/lib/format";
 import { Rating } from "@/components/Rating";
@@ -23,14 +19,22 @@ const loadCar = async (slug: string) => {
   return getCarById(id);
 };
 
-export async function generateMetadata({ params }: CarPageProps): Promise<Metadata> {
+export async function generateMetadata({
+  params,
+}: CarPageProps): Promise<Metadata> {
   const { slug } = await params;
   const car = await loadCar(slug);
   if (!car) return { title: "Car not found" };
 
   const city = car.location.split(",")[0]?.trim();
-  const title = `${car.brandName} ${car.name} for rent${city ? ` in ${city}` : ""}`;
-  const description = `Rent the ${car.brandName} ${car.name}${city ? ` in ${city}` : ""} for ${formatCurrency(car.pricePerDay)}/day. ${car.seats} seats, ${car.transmission}, ${car.fuelType}. Listed by a real VELORA owner.`;
+  const title = `${car.brandName} ${car.name} for rent${
+    city ? ` in ${city}` : ""
+  }`;
+  const description = `Rent the ${car.brandName} ${car.name}${
+    city ? ` in ${city}` : ""
+  } for ${formatCurrency(car.pricePerDay)}/day. ${car.seats} seats, ${
+    car.transmission
+  }, ${car.fuelType}. Listed by a real VELORA owner.`;
 
   return {
     title,
@@ -40,11 +44,9 @@ export async function generateMetadata({ params }: CarPageProps): Promise<Metada
       description,
       images: car.images[0] ? [{ url: car.images[0] }] : undefined,
     },
-    // A stable canonical based on the real id -- the human-readable prefix
-    // is cosmetic (see lib/slug.ts), so this stops a listing that gets
-    // renamed/relocated from generating a second, competing indexable URL
-    // for the same car.
-    alternates: { canonical: `/cars/${buildCarSlug(car)}` },
+    alternates: {
+      canonical: `/cars/${buildCarSlug(car)}`,
+    },
   };
 }
 
@@ -53,28 +55,31 @@ export default async function CarPage({ params }: CarPageProps) {
   const car = await loadCar(slug);
   if (!car) notFound();
 
-<<<<<<< HEAD
-  const owner = await getOwnerProfile(car.ownerId);
-=======
-  const store = car.ownerStoreSlug ? await getOwnerStoreBySlug(car.ownerStoreSlug) : null;
->>>>>>> claude/velora-git-supabase-workflow-550a70
+  const store = car.ownerStoreSlug
+    ? await getOwnerStoreBySlug(car.ownerStoreSlug)
+    : null;
+
   const city = car.location.split(",")[0]?.trim();
 
-  // STRUCTURED DATA -- schema.org Product + Offer (Google has no dedicated
-  // "car rental listing" rich-result type, but Product/Offer/AggregateRating
-  // are the widely-supported, honest fit: every value here is read straight
-  // from the same real row the visible page renders, never invented for the
-  // sake of richer markup -- aggregateRating is omitted entirely rather than
-  // faked when this car has zero real reviews yet.
   const jsonLd = {
     "@context": "https://schema.org",
     "@type": "Product",
     name: `${car.brandName} ${car.name}`,
     image: car.images,
-    description: car.description || `${car.brandName} ${car.name} available for rent in ${city || car.location}.`,
+    description:
+      car.description ||
+      `${car.brandName} ${car.name} available for rent in ${
+        city || car.location
+      }.`,
     brand: { "@type": "Brand", name: car.brandName },
     ...(car.reviewCount > 0
-      ? { aggregateRating: { "@type": "AggregateRating", ratingValue: car.rating, reviewCount: car.reviewCount } }
+      ? {
+          aggregateRating: {
+            "@type": "AggregateRating",
+            ratingValue: car.rating,
+            reviewCount: car.reviewCount,
+          },
+        }
       : {}),
     offers: {
       "@type": "Offer",
@@ -87,9 +92,10 @@ export default async function CarPage({ params }: CarPageProps) {
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-8 sm:px-6">
-      {/* JSON.stringify of our own server-computed object above, never
-          user-supplied HTML. */}
-      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+      />
 
       <nav className="text-sm text-neutral-500">
         <Link href="/search" className="hover:text-neutral-900">
@@ -108,8 +114,22 @@ export default async function CarPage({ params }: CarPageProps) {
           <div className="grid grid-cols-2 gap-2 overflow-hidden rounded-2xl sm:grid-cols-4">
             {car.images.length > 0 ? (
               car.images.slice(0, 4).map((src, i) => (
-                <div key={src} className={`relative aspect-[4/3] bg-neutral-100 ${i === 0 ? "col-span-2 row-span-2 sm:col-span-2 sm:row-span-2" : ""}`}>
-                  <Image src={src} alt={`${car.brandName} ${car.name} photo ${i + 1}`} fill sizes="50vw" className="object-cover" priority={i === 0} />
+                <div
+                  key={src}
+                  className={`relative aspect-[4/3] bg-neutral-100 ${
+                    i === 0
+                      ? "col-span-2 row-span-2 sm:col-span-2 sm:row-span-2"
+                      : ""
+                  }`}
+                >
+                  <Image
+                    src={src}
+                    alt={`${car.brandName} ${car.name} photo ${i + 1}`}
+                    fill
+                    sizes="50vw"
+                    className="object-cover"
+                    priority={i === 0}
+                  />
                 </div>
               ))
             ) : (
@@ -120,15 +140,26 @@ export default async function CarPage({ params }: CarPageProps) {
           </div>
 
           <div className="mt-6">
-            <p className="text-sm font-medium text-neutral-500">{car.brandName}</p>
-            <h1 className="text-2xl font-bold text-neutral-900 sm:text-3xl">{car.name}</h1>
+            <p className="text-sm font-medium text-neutral-500">
+              {car.brandName}
+            </p>
+            <h1 className="text-2xl font-bold text-neutral-900 sm:text-3xl">
+              {car.name}
+            </h1>
+
             <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-neutral-600">
-              <Rating rating={car.rating} reviewCount={car.reviewCount} size="md" />
+              <Rating
+                rating={car.rating}
+                reviewCount={car.reviewCount}
+                size="md"
+              />
               <span aria-hidden>•</span>
               <span>{city || car.location}</span>
               <span aria-hidden>•</span>
               <span className="font-medium text-emerald-700">
-                {car.quantity > 1 ? `Available for booking · ${car.quantity} units` : "Available for booking"}
+                {car.quantity > 1
+                  ? `Available for booking · ${car.quantity} units`
+                  : "Available for booking"}
               </span>
             </div>
           </div>
@@ -142,17 +173,26 @@ export default async function CarPage({ params }: CarPageProps) {
 
           {car.description ? (
             <div className="mt-6">
-              <h2 className="text-base font-semibold text-neutral-900">About this car</h2>
-              <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-neutral-600">{car.description}</p>
+              <h2 className="text-base font-semibold text-neutral-900">
+                About this car
+              </h2>
+              <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-neutral-600">
+                {car.description}
+              </p>
             </div>
           ) : null}
 
           {car.features.length > 0 ? (
             <div className="mt-6">
-              <h2 className="text-base font-semibold text-neutral-900">Features</h2>
+              <h2 className="text-base font-semibold text-neutral-900">
+                Features
+              </h2>
               <div className="mt-2 flex flex-wrap gap-2">
                 {car.features.map((f) => (
-                  <span key={f} className="rounded-full bg-neutral-100 px-3 py-1 text-xs font-medium text-neutral-700">
+                  <span
+                    key={f}
+                    className="rounded-full bg-neutral-100 px-3 py-1 text-xs font-medium text-neutral-700"
+                  >
                     {f}
                   </span>
                 ))}
@@ -160,29 +200,33 @@ export default async function CarPage({ params }: CarPageProps) {
             </div>
           ) : null}
 
-<<<<<<< HEAD
-          {owner ? (
-            <div className="mt-6">
-              <h2 className="text-base font-semibold text-neutral-900">Listed by</h2>
-              <Link href={`/owners/${owner.id}`} className="mt-2 flex items-center gap-3 rounded-2xl bg-white p-4 ring-1 ring-black/5 transition-colors hover:ring-neutral-300">
-                <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-full bg-neutral-100">
-                  {owner.avatar ? <Image src={owner.avatar} alt={owner.name} fill sizes="44px" className="object-cover" /> : null}
-                </div>
-                <div>
-                  <p className="text-sm font-semibold text-neutral-900">{owner.name}</p>
-                  <p className="text-xs text-neutral-500">View owner profile</p>
-=======
           {store ? (
             <div className="mt-6">
-              <h2 className="text-base font-semibold text-neutral-900">Listed by</h2>
-              <Link href={`/owners/${store.slug}`} className="mt-2 flex items-center gap-3 rounded-2xl bg-white p-4 ring-1 ring-black/5 transition-colors hover:ring-neutral-300">
+              <h2 className="text-base font-semibold text-neutral-900">
+                Listed by
+              </h2>
+
+              <Link
+                href={`/owners/${store.slug}`}
+                className="mt-2 flex items-center gap-3 rounded-2xl bg-white p-4 ring-1 ring-black/5 transition-colors hover:ring-neutral-300"
+              >
                 <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-full bg-neutral-100">
-                  {store.ownerAvatar ? <Image src={store.ownerAvatar} alt={store.storeName} fill sizes="44px" className="object-cover" /> : null}
+                  {store.ownerAvatar ? (
+                    <Image
+                      src={store.ownerAvatar}
+                      alt={store.storeName}
+                      fill
+                      sizes="44px"
+                      className="object-cover"
+                    />
+                  ) : null}
                 </div>
+
                 <div>
-                  <p className="text-sm font-semibold text-neutral-900">{store.storeName}</p>
+                  <p className="text-sm font-semibold text-neutral-900">
+                    {store.storeName}
+                  </p>
                   <p className="text-xs text-neutral-500">View store</p>
->>>>>>> claude/velora-git-supabase-workflow-550a70
                 </div>
               </Link>
             </div>
@@ -193,10 +237,16 @@ export default async function CarPage({ params }: CarPageProps) {
           <div className="sticky top-24 rounded-2xl bg-white p-5 ring-1 ring-black/5">
             <p className="text-2xl font-bold text-neutral-900">
               {formatCurrency(car.pricePerDay)}
-              <span className="text-sm font-normal text-neutral-500"> / day</span>
+              <span className="text-sm font-normal text-neutral-500">
+                {" "}
+                / day
+              </span>
             </p>
+
             {car.driverPricePerDay > 0 ? (
-              <p className="mt-1 text-xs text-neutral-500">With driver: {formatCurrency(car.driverPricePerDay)} / day</p>
+              <p className="mt-1 text-xs text-neutral-500">
+                With driver: {formatCurrency(car.driverPricePerDay)} / day
+              </p>
             ) : null}
 
             <a
@@ -207,7 +257,10 @@ export default async function CarPage({ params }: CarPageProps) {
             >
               Book Now
             </a>
-            <p className="mt-2 text-center text-xs text-neutral-500">Booking is available through the VELORA app.</p>
+
+            <p className="mt-2 text-center text-xs text-neutral-500">
+              Booking is available through the VELORA app.
+            </p>
           </div>
         </div>
       </div>
@@ -215,9 +268,14 @@ export default async function CarPage({ params }: CarPageProps) {
   );
 }
 
-const Spec: React.FC<{ label: string; value: string }> = ({ label, value }) => (
+const Spec: React.FC<{ label: string; value: string }> = ({
+  label,
+  value,
+}) => (
   <div>
-    <p className="text-[11px] uppercase tracking-wide text-neutral-400">{label}</p>
+    <p className="text-[11px] uppercase tracking-wide text-neutral-400">
+      {label}
+    </p>
     <p className="text-sm font-semibold text-neutral-900">{value}</p>
   </div>
 );

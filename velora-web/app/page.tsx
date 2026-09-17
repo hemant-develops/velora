@@ -1,10 +1,6 @@
-<<<<<<< HEAD
-import { SearchForm } from "@/components/SearchForm";
-=======
 import Link from "next/link";
 import { SearchForm } from "@/components/SearchForm";
 import { PLAY_STORE_URL } from "@/lib/constants";
->>>>>>> claude/velora-git-supabase-workflow-550a70
 
 const STEPS = [
   { title: "Search", body: "Tell us the car, city, seats or budget you need." },
@@ -45,12 +41,12 @@ export default function HomePage() {
           ))}
         </div>
       </section>
-<<<<<<< HEAD
-=======
 
       <section className="bg-neutral-900 px-4 py-14 sm:px-6">
         <div className="mx-auto flex max-w-4xl flex-col items-center gap-5 text-center">
-          <h2 className="text-2xl font-bold text-white sm:text-3xl">Booking happens in the VELORA app</h2>
+          <h2 className="text-2xl font-bold text-white sm:text-3xl">
+            Booking happens in the VELORA app
+          </h2>
           <p className="max-w-xl text-sm text-neutral-300 sm:text-base">
             Message the owner, get instant updates and complete your booking — all inside the free VELORA app.
           </p>
@@ -77,7 +73,6 @@ export default function HomePage() {
           Become a Car Owner
         </Link>
       </section>
->>>>>>> claude/velora-git-supabase-workflow-550a70
     </div>
   );
 }

@@ -20,31 +20,21 @@ export interface PublicCar {
   longitude: number | null;
   instantBook: boolean;
   createdAt: string;
-  // How many identical physical units this one listing represents (an owner
-  // with 3 identical Swifts lists them once with quantity 3 instead of 3
-  // separate listings -- see the mobile app's Car.quantity). Shown on the
-  // car page so "Available for booking" is honest about there being more
-  // than one unit, never fabricated beyond what the owner actually set.
+
+  // How many identical physical units this listing represents.
   quantity: number;
-<<<<<<< HEAD
+
+  // Public storefront slug for the owner, when available.
+  ownerStoreSlug: string | null;
 }
 
 export interface PublicOwner {
   id: string;
   name: string;
   avatar: string | null;
-=======
-  // The owner's store slug, when they have one (see PublicStore below) --
-  // null for a subscribed-but-store-not-yet-provisioned edge case (should
-  // be rare: ensureOwnerStore creates one automatically on first
-  // subscription) or if the lookup itself failed. The car page's "Listed
-  // by" link is simply omitted rather than shown broken when this is null.
-  ownerStoreSlug: string | null;
 }
 
-// A subscribed owner's public storefront (0028_owner_stores.sql) -- has its
-// own identity (store_name, slug, description, policies) an owner sets
-// deliberately, separate from their personal profile name/avatar.
+// A subscribed owner's public storefront.
 export interface PublicStore {
   ownerId: string;
   storeName: string;
@@ -53,7 +43,6 @@ export interface PublicStore {
   policies: string;
   ownerName: string;
   ownerAvatar: string | null;
->>>>>>> claude/velora-git-supabase-workflow-550a70
 }
 
 export interface SearchFilters {
