@@ -259,12 +259,12 @@ export interface ChatMessage {
   senderId: string;
   text: string;
   createdAt: string;
-  // A voice note recorded in-app (see src/hooks/useVoiceRecorder.ts). `text`
-  // is still always set (a short "🎤 Voice message" label) so every existing
-  // preview/notification code path that reads `.text` keeps working
-  // unchanged -- attachmentUrl is purely additive.
+  // `text` is still always set to a short display label (e.g. "🎤 Voice
+  // message", "📍 Location shared") so every existing preview/notification
+  // code path that reads `.text` keeps working unchanged -- attachmentUrl
+  // is purely additive. 'location' stores "<lat>,<lng>" as attachmentUrl.
   attachmentUrl?: string;
-  attachmentType?: 'audio';
+  attachmentType?: 'audio' | 'location';
 }
 
 // A conversation is always between one specific renter and one specific

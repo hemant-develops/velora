@@ -93,6 +93,12 @@ export const NotificationsScreen: React.FC<Props> = ({ navigation }) => {
                 <Text style={styles.time}>{formatTime(item.createdAt)}</Text>
               </View>
               <Text style={styles.message} numberOfLines={2}>{item.message}</Text>
+              {item.read ? (
+                <View style={styles.seenRow}>
+                  <Ionicons name="checkmark-done" size={13} color={colors.textTertiary} />
+                  <Text style={styles.seenText}>Seen</Text>
+                </View>
+              ) : null}
             </View>
             {!item.read ? <View style={styles.unreadDot} /> : null}
           </Pressable>
@@ -123,6 +129,8 @@ const styles = StyleSheet.create({
   titleUnread: { fontWeight: '700' },
   time: { ...typography.bodySm, color: colors.textTertiary, marginLeft: spacing.sm },
   message: { ...typography.bodySm, color: colors.textSecondary, marginTop: 2 },
+  seenRow: { flexDirection: 'row', alignItems: 'center', marginTop: 4, gap: 4 },
+  seenText: { ...typography.caption, color: colors.textTertiary },
   unreadDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.primary, marginLeft: spacing.sm, marginTop: 6 },
   separator: { height: 1, backgroundColor: colors.borderLight },
 });
