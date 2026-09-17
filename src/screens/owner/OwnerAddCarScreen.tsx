@@ -546,6 +546,28 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
     }
   };
 
+  // SUBSCRIPTION GATE -- "Subscription Active -> Car Listing Active" from
+  // the product spec. Only gates creating a BRAND NEW listing -- an owner
+  // whose subscription has since lapsed can still open an EXISTING car here
+  // to edit it (e.g. to mark it inactive, or right after renewing), so this
+  // is deliberately `!isEditMode` only, never blocking the edit path.
+  if (!isEditMode && !user?.subscriptionActive) {
+    return (
+      <View style={{ flex: 1, backgroundColor: colors.background }}>
+        <ScreenHeader title="List a Car" onBack={() => navigation.goBack()} />
+        <View style={styles.subscribeGate}>
+          <Ionicons name="lock-closed" size={32} color={colors.primaryDark} />
+          <Text style={styles.subscribeGateTitle}>Subscribe to list your car</Text>
+          <Text style={styles.subscribeGateBody}>
+            An active VELORA owner subscription is required to list a car — it also gets you a public store page on the
+            VELORA website.
+          </Text>
+          <PrimaryButton label="View Subscription" onPress={() => navigation.navigate('Subscription')} style={{ marginTop: spacing.lg }} />
+        </View>
+      </View>
+    );
+  }
+
   return (
     <KeyboardAvoidingView
       style={{ flex: 1, backgroundColor: colors.background }}
@@ -913,6 +935,9 @@ export const OwnerAddCarScreen: React.FC<Props> = ({ navigation, route }) => {
 };
 
 const styles = StyleSheet.create({
+  subscribeGate: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.xl },
+  subscribeGateTitle: { ...typography.headingSm, color: colors.textPrimary, marginTop: spacing.md, textAlign: 'center' },
+  subscribeGateBody: { ...typography.bodySm, color: colors.textSecondary, marginTop: spacing.sm, textAlign: 'center', lineHeight: 19 },
   label: { ...typography.titleMd, color: colors.textPrimary, marginBottom: 8 },
   locationLabelRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 },
   useCurrentLocationText: { ...typography.bodySm, color: colors.primaryDark, fontWeight: '600' },

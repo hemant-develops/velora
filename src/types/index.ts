@@ -226,6 +226,15 @@ export interface AppUser {
   // number bound to exactly this account, enforced unique at the database
   // level so the same verified number can never belong to two accounts.
   phoneVerification?: PhoneVerification;
+  // SUBSCRIPTION MONETIZATION -- reflects public.owner_subscriptions via
+  // has_active_subscription() (0026_owner_subscriptions.sql). An owner can
+  // only list a NEW car (see OwnerAddCarScreen) while this is true; a
+  // renter simply never has an active row and this stays false. Set only
+  // from a real, server-verified Razorpay payment (see
+  // verify-subscription-payment Edge Function) -- never assumed true from
+  // any client-side state.
+  subscriptionActive?: boolean;
+  subscriptionExpiresAt?: string;
 }
 
 export interface PhoneVerification {

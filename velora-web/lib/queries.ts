@@ -49,6 +49,29 @@ const getBrandMap = async (): Promise<Map<string, string>> => {
   return new Map(((data ?? []) as BrandRow[]).map((b) => [b.id, b.name]));
 };
 
+// SUBSCRIPTION MONETIZATION -- "Subscription Active -> Car Listing Active ->
+// Website + App visible" (0026_owner_subscriptions.sql). A car with
+// is_active=true is still hidden from every public page here if its
+// owner's subscription has lapsed -- exactly the same rule and the same
+// batched RPC the mobile app's CarsContext applies, so a listing's
+// visibility never disagrees between the two.
+const filterCarsBySubscribedOwners = async <T extends { ownerId: string }>(cars: T[]): Promise<T[]> => {
+  if (cars.length === 0) return cars;
+  const ownerIds = Array.from(new Set(cars.map((c) => c.ownerId)));
+  const { data, error } = await supabase.rpc('get_active_subscription_owner_ids', { p_owner_ids: ownerIds });
+  if (error) {
+    // Fail OPEN, not closed -- this is a business/monetization rule, not a
+    // security boundary (RLS/grants already decide what anon can read at
+    // all), so a transient RPC hiccup should never make the entire public
+    // marketplace look empty. Logged clearly so a real, persistent failure
+    // is still visible in server logs.
+    console.error('VELORA_WEB_SUBSCRIBED_OWNERS_ERROR', error.message);
+    return cars;
+  }
+  const subscribed = new Set(((data ?? []) as { owner_id: string }[]).map((row) => row.owner_id));
+  return cars.filter((c) => subscribed.has(c.ownerId));
+};
+
 const rowToCar = (row: CarRow, brandName: string): PublicCar => ({
   id: row.id,
   ownerId: row.owner_id,
@@ -110,7 +133,7 @@ export const searchActiveCars = async (filters: SearchFilters): Promise<PublicCa
     return [];
   }
 
-  let cars = ((data ?? []) as CarRow[]).map((row) => rowToCar(row, brandMap.get(row.brand_id) ?? 'Other'));
+  let cars = await filterCarsBySubscribedOwners(((data ?? []) as CarRow[]).map((row) => rowToCar(row, brandMap.get(row.brand_id) ?? 'Other')));
 
   // A free-text query further narrows AND ranks -- unlike the structured
   // filters above (price/seats/location/features), name/brand text search
@@ -165,7 +188,9 @@ export const getCarById = async (id: string): Promise<PublicCar | null> => {
   if (!data) return null;
 
   const row = data as CarRow;
-  return rowToCar(row, brandMap.get(row.brand_id) ?? 'Other');
+  const car = rowToCar(row, brandMap.get(row.brand_id) ?? 'Other');
+  const [visible] = await filterCarsBySubscribedOwners([car]);
+  return visible ?? null;
 };
 
 export const getOwnerProfile = async (ownerId: string): Promise<PublicOwner | null> => {
@@ -187,11 +212,11 @@ export const getOwnerProfile = async (ownerId: string): Promise<PublicOwner | nu
 // searchActiveCars above rather than reusing it, since a sitemap needs
 // every listing regardless of price/seats/etc. and doesn't need the
 // full PublicCar shape for anything but building a URL.
-export const listAllActiveCarSlugs = async (): Promise<{ id: string; name: string; brandName: string; location: string }[]> => {
+export const listAllActiveCarSlugs = async (): Promise<{ id: string; ownerId: string; name: string; brandName: string; location: string }[]> => {
   if (!isSupabaseConfigured) return [];
 
   const [{ data, error }, brandMap] = await Promise.all([
-    supabase.from('car_listings').select('id, name, brand_id, location').eq('is_active', true),
+    supabase.from('car_listings').select('id, owner_id, name, brand_id, location').eq('is_active', true),
     getBrandMap(),
   ]);
 
@@ -200,12 +225,17 @@ export const listAllActiveCarSlugs = async (): Promise<{ id: string; name: strin
     return [];
   }
 
-  return ((data ?? []) as { id: string; name: string; brand_id: string; location: string }[]).map((row) => ({
+  const rows = ((data ?? []) as { id: string; owner_id: string; name: string; brand_id: string; location: string }[]).map((row) => ({
     id: row.id,
+    ownerId: row.owner_id,
     name: row.name,
     brandName: brandMap.get(row.brand_id) ?? 'Other',
     location: row.location,
   }));
+  // A car whose owner's subscription has lapsed gets no page to link from
+  // the sitemap either -- Google should never be pointed at a listing the
+  // site itself won't render (see filterCarsBySubscribedOwners above).
+  return filterCarsBySubscribedOwners(rows);
 };
 
 export const getActiveCarsByOwner = async (ownerId: string): Promise<PublicCar[]> => {
@@ -221,5 +251,5 @@ export const getActiveCarsByOwner = async (ownerId: string): Promise<PublicCar[]
     return [];
   }
 
-  return ((data ?? []) as CarRow[]).map((row) => rowToCar(row, brandMap.get(row.brand_id) ?? 'Other'));
+  return filterCarsBySubscribedOwners(((data ?? []) as CarRow[]).map((row) => rowToCar(row, brandMap.get(row.brand_id) ?? 'Other')));
 };

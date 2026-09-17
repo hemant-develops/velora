@@ -5,6 +5,7 @@
   },
   "exclude": [
     "node_modules",
-    "velora-admin"
+    "velora-admin",
+    "velora-web"
   ]
 }

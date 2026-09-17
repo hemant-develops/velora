@@ -23,6 +23,7 @@ import { ReviewScreen } from '../screens/rents/ReviewScreen';
 import { ReportScreen } from '../screens/misc/ReportScreen';
 import { OwnerVerificationScreen } from '../screens/profile/OwnerVerificationScreen';
 import { PhoneVerificationScreen } from '../screens/profile/PhoneVerificationScreen';
+import { SubscriptionScreen } from '../screens/profile/SubscriptionScreen';
 import { LocationPickerScreen } from '../screens/misc/LocationPickerScreen';
 import { OwnerPublicProfileScreen } from '../screens/owner/OwnerPublicProfileScreen';
 import { CustomerProfileScreen } from '../screens/profile/CustomerProfileScreen';
@@ -50,6 +51,7 @@ export const RootNavigator: React.FC = () => (
     <Stack.Screen name="OwnerCarCalendar" component={OwnerCarCalendarScreen} />
     <Stack.Screen name="OwnerVerification" component={OwnerVerificationScreen} options={{ presentation: 'modal' }} />
     <Stack.Screen name="PhoneVerification" component={PhoneVerificationScreen} options={{ presentation: 'modal' }} />
+    <Stack.Screen name="Subscription" component={SubscriptionScreen} options={{ presentation: 'modal' }} />
     <Stack.Screen name="OwnerProfile" component={OwnerPublicProfileScreen} />
     <Stack.Screen name="CustomerProfile" component={CustomerProfileScreen} />
     <Stack.Screen name="BookingDetails" component={BookingDetailsScreen} />

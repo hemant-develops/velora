@@ -340,6 +340,14 @@ export const ProfileScreen: React.FC = () => {
           subtitle={user.phoneVerification?.verified ? 'Verified' : 'Not verified yet'}
           onPress={() => navigation.navigate('PhoneVerification')}
         />
+        {isOwner ? (
+          <ProfileMenuItem
+            icon="ribbon-outline"
+            label="Owner Subscription"
+            subtitle={user.subscriptionActive ? 'Active' : 'Inactive — subscribe to list cars'}
+            onPress={() => navigation.navigate('Subscription')}
+          />
+        ) : null}
         <ProfileMenuItem icon="shield-checkmark-outline" label="Privacy" onPress={() => navigation.navigate('Legal', { kind: 'privacy' })} />
         <ProfileMenuItem icon="document-text-outline" label="Terms & Conditions" onPress={() => navigation.navigate('Legal', { kind: 'terms' })} />
         <ProfileMenuItem icon="help-circle-outline" label="Help & Support" onPress={() => navigation.navigate('HelpSupport')} />

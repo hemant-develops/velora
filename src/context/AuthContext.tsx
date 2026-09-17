@@ -96,6 +96,11 @@ interface AuthContextValue {
   }) => Promise<AuthResult>;
   logout: () => Promise<void>;
   deactivateAccount: () => Promise<AuthResult>;
+  refreshSubscriptionStatus: () => Promise<void>;
+  createSubscriptionOrder: () => Promise<
+    { success: true; orderId: string; amount: number; currency: string; keyId: string } | { success: false; error: string }
+  >;
+  verifySubscriptionPayment: (params: { orderId: string; paymentId: string; signature: string }) => Promise<AuthResult>;
   updateProfile: (patch: Partial<AppUser>) => Promise<boolean>;
   switchRole: (role: UserRole) => Promise<AuthResult>;
   // FLAGGED MINIMAL ADDITION: a real "Forgot Password" call, replacing what
@@ -248,9 +253,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // role='owner' but no row here (e.g. one created before this shipped)
     // now correctly shows 'none' and needs to actually complete
     // verification, same as everyone else.
-    const [ownerVerification, phoneVerification] = await Promise.all([
+    const [ownerVerification, phoneVerification, subscription] = await Promise.all([
       fetchOwnerVerification(authUser.id),
       fetchPhoneVerification(authUser.id),
+      fetchSubscriptionStatus(authUser.id),
     ]);
 
     const extras = profileExtrasRef.current[authUser.id];
@@ -275,6 +281,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         role,
         ownerVerification,
         phoneVerification,
+        subscriptionActive: subscription.active,
+        subscriptionExpiresAt: subscription.expiresAt,
       };
       profileCacheRef.current.set(nextUser.id, nextUser);
       return nextUser;
@@ -304,6 +312,77 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!user) return;
     const phoneVerification = await fetchPhoneVerification(user.id);
     setUser((prev) => (prev ? { ...prev, phoneVerification } : prev));
+  };
+
+  // SUBSCRIPTION MONETIZATION -- has_active_subscription() is SECURITY
+  // DEFINER specifically so this same call works for a signed-in owner here
+  // AND for the signed-out public website (see 0026_owner_subscriptions.sql)
+  // -- neither ever sees the underlying payment rows, only this one boolean.
+  const fetchSubscriptionStatus = async (userId: string): Promise<{ active: boolean; expiresAt?: string }> => {
+    const { data, error } = await supabase.rpc('has_active_subscription', { p_owner_id: userId });
+    if (error) {
+      console.log(`VELORA_SUBSCRIPTION_STATUS_FETCH_ERROR: ${error.message}`);
+      return { active: false };
+    }
+    if (!data) return { active: false };
+    // The most recent active row's expiry, for display only (e.g. "renews
+    // in 12 days") -- has_active_subscription() already confirmed at least
+    // one unexpired row exists; this is a best-effort read of the same
+    // table via the caller's OWN RLS (owner reading their own rows), not a
+    // second privileged call.
+    const { data: latest } = await supabase
+      .from('owner_subscriptions')
+      .select('expires_at')
+      .eq('owner_id', userId)
+      .eq('status', 'active')
+      .order('expires_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    return { active: true, expiresAt: latest?.expires_at };
+  };
+
+  // Exposed so SubscriptionScreen/Profile can re-check on demand (e.g.
+  // right after a successful payment, before navigating away).
+  const refreshSubscriptionStatus = async () => {
+    if (!user) return;
+    const subscription = await fetchSubscriptionStatus(user.id);
+    setUser((prev) => (prev ? { ...prev, subscriptionActive: subscription.active, subscriptionExpiresAt: subscription.expiresAt } : prev));
+  };
+
+  // The two Edge Functions from supabase/functions/ -- see their own
+  // top-of-file comments for the full create-order -> Razorpay Checkout ->
+  // verify-payment flow this pair implements. AuthContext only ever
+  // forwards the call and its result; it never touches a Razorpay key or
+  // signature itself.
+  const createSubscriptionOrder = async (): Promise<
+    { success: true; orderId: string; amount: number; currency: string; keyId: string } | { success: false; error: string }
+  > => {
+    const { data, error } = await supabase.functions.invoke('create-subscription-order');
+    if (error) {
+      console.log(`VELORA_CREATE_SUBSCRIPTION_ORDER_ERROR: ${error.message}`);
+      return { success: false, error: "Couldn't start the payment. Please try again." };
+    }
+    if (data?.error) {
+      return { success: false, error: data.error };
+    }
+    return { success: true, orderId: data.orderId, amount: data.amount, currency: data.currency, keyId: data.keyId };
+  };
+
+  const verifySubscriptionPayment = async (params: {
+    orderId: string;
+    paymentId: string;
+    signature: string;
+  }): Promise<AuthResult> => {
+    const { data, error } = await supabase.functions.invoke('verify-subscription-payment', { body: params });
+    if (error) {
+      console.log(`VELORA_VERIFY_SUBSCRIPTION_PAYMENT_ERROR: ${error.message}`);
+      return { success: false, error: "Payment could not be verified. Please contact support if you were charged." };
+    }
+    if (data?.error) {
+      return { success: false, error: data.error };
+    }
+    await refreshSubscriptionStatus();
+    return { success: true };
   };
 
   // Reads the caller's own row from public.owner_verifications (RLS:
@@ -990,6 +1069,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       signup,
       logout,
       deactivateAccount,
+      refreshSubscriptionStatus,
+      createSubscriptionOrder,
+      verifySubscriptionPayment,
       updateProfile,
       switchRole,
       resetPassword,

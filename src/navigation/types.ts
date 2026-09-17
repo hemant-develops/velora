@@ -97,6 +97,7 @@ export type RootStackParamList = {
   OwnerCarCalendar: { carId: string };
   OwnerVerification: undefined;
   PhoneVerification: undefined;
+  Subscription: undefined;
   OwnerProfile: { ownerId: string; carId?: string; carName?: string };
   // A pushed, dedicated screen for "Home -> tap a brand" (see BrandCarsScreen
   // for why this replaced the old in-place Home filter).
