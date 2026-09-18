@@ -1,5 +1,5 @@
-import React, { useMemo, useState } from 'react';
-import { Alert, FlatList, Pressable, Share, StyleSheet, Switch, Text, View } from 'react-native';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Alert, FlatList, Linking, Pressable, Share, StyleSheet, Switch, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -20,6 +20,9 @@ import { formatResponseCountdown, isResponseOverdue } from '../../utils/bookingC
 import { rowsToCsv } from '../../utils/csv';
 import { useAppNavigation, useTabBarClearance } from '../../navigation/hooks';
 import { AppUser, Booking, BookingStatus, Car } from '../../types';
+import { supabase } from '../../lib/supabase';
+
+const WEBSITE_ORIGIN = (process.env.EXPO_PUBLIC_SITE_URL ?? 'https://velora.com').replace(/\/$/, '');
 
 type TabKey = 'listings' | 'requests' | 'earnings';
 
@@ -45,6 +48,33 @@ export const OwnerDashboardScreen: React.FC = () => {
   const { getCarsByOwner, updateOwnerCar, removeOwnerCar, isLoaded: carsLoaded } = useCars();
   const { getBookingsForCars, isLoading: bookingsLoading } = useBookings();
   const [tab, setTab] = useState<TabKey>('listings');
+  const [storeSlug, setStoreSlug] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!user) {
+      setStoreSlug(null);
+      return;
+    }
+
+    let cancelled = false;
+    supabase
+      .from('owner_stores')
+      .select('slug')
+      .eq('owner_id', user.id)
+      .maybeSingle()
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        if (!error && data?.slug) {
+          setStoreSlug(data.slug);
+        } else {
+          setStoreSlug(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id]);
 
   const myCars = useMemo(() => (user ? getCarsByOwner(user.id) : []), [user, getCarsByOwner]);
   const myCarIds = useMemo(() => myCars.map((c) => c.id), [myCars]);
@@ -96,6 +126,7 @@ export const OwnerDashboardScreen: React.FC = () => {
     [myCars, requests, todayIso],
   );
   const occupancyPercent = totalUnits > 0 ? Math.round((bookedUnitsNow / totalUnits) * 100) : 0;
+  const storeUrl = storeSlug ? `${WEBSITE_ORIGIN}/owners/${storeSlug}` : null;
 
   // PHASE 7 -- Owner Earnings Export. Builds a CSV from exactly the same
   // completedBookings this tab already lists, then hands it to React
@@ -255,9 +286,20 @@ export const OwnerDashboardScreen: React.FC = () => {
             <Text style={typography.displayMd}>My Listings</Text>
             <Text style={styles.subtitle}>Manage the cars you rent out</Text>
           </View>
-          <Pressable style={styles.addBtn} onPress={() => navigation.navigate('OwnerAddCar')} accessibilityLabel="Add a car">
-            <Ionicons name="add" size={22} color={colors.onPrimary} />
-          </Pressable>
+          <View style={styles.headerActions}>
+            {storeUrl ? (
+              <Pressable
+                style={[styles.actionBtn, styles.storeBtn]}
+                onPress={() => Linking.openURL(storeUrl)}
+                accessibilityLabel="Open public store"
+              >
+                <Ionicons name="storefront-outline" size={18} color={colors.primaryDark} />
+              </Pressable>
+            ) : null}
+            <Pressable style={styles.addBtn} onPress={() => navigation.navigate('OwnerAddCar')} accessibilityLabel="Add a car">
+              <Ionicons name="add" size={22} color={colors.onPrimary} />
+            </Pressable>
+          </View>
         </View>
 
         {allCarsInactive ? (
@@ -615,6 +657,18 @@ const styles = StyleSheet.create({
   onboardingSubtitle: { ...typography.bodyMd, color: colors.textSecondary, textAlign: 'center', marginTop: spacing.sm, lineHeight: 21 },
   headerRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' },
   subtitle: { ...typography.bodyMd, color: colors.textSecondary, marginTop: 4 },
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  actionBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+  },
+  storeBtn: { backgroundColor: colors.white },
   addBtn: {
     width: 44,
     height: 44,

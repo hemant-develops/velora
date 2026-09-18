@@ -12,7 +12,7 @@ import { supabase } from '../../lib/supabase';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'StoreSettings'>;
 
-const WEBSITE_ORIGIN = 'https://velora.com';
+const WEBSITE_ORIGIN = (process.env.EXPO_PUBLIC_SITE_URL ?? 'https://velora.com').replace(/\/$/, '');
 
 // OWNER STORE -- "/owners/{slug}" from the product spec
 // (0028_owner_stores.sql). A subscribed owner already gets a store
@@ -103,6 +103,16 @@ export const StoreSettingsScreen: React.FC<Props> = ({ navigation }) => {
               </Text>
               <Ionicons name="open-outline" size={16} color={colors.textTertiary} />
             </Pressable>
+          ) : null}
+
+          {slug ? (
+            <PrimaryButton
+              label="Open Public Store"
+              onPress={() => Linking.openURL(`${WEBSITE_ORIGIN}/owners/${slug}`)}
+              variant="outline"
+              icon={<Ionicons name="open-outline" size={18} color={colors.textPrimary} />}
+              style={{ marginBottom: spacing.md }}
+            />
           ) : null}
 
           <InputField label="Store Name" placeholder="e.g. Royal Cars Kota" value={storeName} onChangeText={setStoreName} />
