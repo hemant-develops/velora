@@ -252,7 +252,7 @@ const uploadImageIfLocalInternal = async (
       console.log(`VELORA_IMAGE_AUTH_STATE: hasSession=${hasSession} userIdMatchesPath=${userIdMatchesPath}`);
 
       const { error } = await withTimeout<{ data: unknown; error: { message: string } | null }>(
-        supabase.storage.from(bucket).upload(fullPath, blob, { contentType, upsert: false }),
+        supabase.storage.from(bucket).upload(fullPath, blob, { contentType, upsert: true }),
         READ_TIMEOUT_MS,
         'Uploading photo',
       );

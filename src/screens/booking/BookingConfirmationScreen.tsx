@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -19,6 +19,7 @@ type Props = NativeStackScreenProps<RootStackParamList, 'BookingConfirmation'>;
 export const BookingConfirmationScreen: React.FC<Props> = ({ route, navigation }) => {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
+  const { fetchPublicProfile } = useAuth();
   const { bookings } = useBookings();
   const { getCarById } = useCars();
   const rawBooking = bookings.find((b) => b.id === route.params.bookingId);
@@ -29,6 +30,18 @@ export const BookingConfirmationScreen: React.FC<Props> = ({ route, navigation }
   // confirmation details.
   const booking = rawBooking && user && rawBooking.renterId === user.id ? rawBooking : undefined;
   const car = booking ? getCarById(booking.carId) : undefined;
+  const [ownerName, setOwnerName] = useState('Owner');
+
+  useEffect(() => {
+    if (!car?.ownerId) return;
+    let cancelled = false;
+    fetchPublicProfile(car.ownerId).then((owner) => {
+      if (!cancelled && owner?.name) setOwnerName(owner.name);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [car?.ownerId, fetchPublicProfile]);
 
   if (!booking || !car) {
     return (
@@ -114,6 +127,19 @@ export const BookingConfirmationScreen: React.FC<Props> = ({ route, navigation }
       </ScrollView>
 
       <View style={[styles.footer, { paddingBottom: insets.bottom + spacing.md }]}>
+        <PrimaryButton
+          label="Message Owner"
+          variant="outline"
+          onPress={() =>
+            navigation.navigate('ConversationDetail', {
+              carId: car.id,
+              carName: car.name,
+              ownerId: car.ownerId,
+              ownerName,
+            })
+          }
+          icon={<Ionicons name="chatbubble-ellipses-outline" size={18} color={colors.textPrimary} />}
+        />
         <PrimaryButton
           label="View My Rents"
           onPress={() =>

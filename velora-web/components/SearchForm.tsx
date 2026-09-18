@@ -21,6 +21,10 @@ export const SearchForm: React.FC<Props> = ({ initial, compact }) => {
   const router = useRouter();
   const [q, setQ] = useState(initial?.q ?? '');
   const [seats, setSeats] = useState<SearchFilters['seats'] | 'any'>(initial?.seats ?? 'any');
+  const [category, setCategory] = useState(initial?.category ?? '');
+  const [transmission, setTransmission] = useState(initial?.transmission ?? '');
+  const [fuelType, setFuelType] = useState(initial?.fuelType ?? '');
+  const [instantBook, setInstantBook] = useState(initial?.instantBook ?? false);
   const [minPrice, setMinPrice] = useState(initial?.minPrice ? String(initial.minPrice) : '');
   const [maxPrice, setMaxPrice] = useState(initial?.maxPrice ? String(initial.maxPrice) : '');
   const [location, setLocation] = useState(initial?.location ?? '');
@@ -35,6 +39,10 @@ export const SearchForm: React.FC<Props> = ({ initial, compact }) => {
     const params = new URLSearchParams();
     if (q.trim()) params.set('q', q.trim());
     if (seats && seats !== 'any') params.set('seats', seats);
+    if (category) params.set('category', category);
+    if (transmission) params.set('transmission', transmission);
+    if (fuelType) params.set('fuelType', fuelType);
+    if (instantBook) params.set('instantBook', 'true');
     if (minPrice) params.set('minPrice', minPrice);
     if (maxPrice) params.set('maxPrice', maxPrice);
     if (location.trim()) params.set('location', location.trim());
@@ -102,6 +110,14 @@ export const SearchForm: React.FC<Props> = ({ initial, compact }) => {
             />
           </div>
         </div>
+
+        <SelectField label="Category" value={category} onChange={setCategory} options={['Economy', 'Hatchback', 'Sedan', 'SUV', 'MUV', 'Premium', 'Luxury Sedan', 'Sports Car', 'Convertible', 'Electric']} />
+        <SelectField label="Transmission" value={transmission} onChange={setTransmission} options={['Automatic', 'Manual']} />
+        <SelectField label="Fuel" value={fuelType} onChange={setFuelType} options={['Petrol', 'Diesel', 'Electric', 'Hybrid']} />
+        <label className="flex items-center gap-2 self-end pb-2 text-sm font-medium text-neutral-700">
+          <input type="checkbox" checked={instantBook} onChange={(e) => setInstantBook(e.target.checked)} className="h-4 w-4 accent-amber-500" />
+          Instant Book only
+        </label>
       </div>
 
       {!compact ? (
@@ -133,3 +149,13 @@ export const SearchForm: React.FC<Props> = ({ initial, compact }) => {
     </form>
   );
 };
+
+const SelectField: React.FC<{ label: string; value: string; onChange: (value: string) => void; options: string[] }> = ({ label, value, onChange, options }) => (
+  <label className="flex flex-col gap-1.5">
+    <span className="text-sm font-medium text-neutral-700">{label}</span>
+    <select value={value} onChange={(e) => onChange(e.target.value)} className="h-11 rounded-lg border border-neutral-300 bg-white px-3 text-sm text-neutral-900 outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-500/30">
+      <option value="">Any</option>
+      {options.map((option) => <option key={option} value={option}>{option}</option>)}
+    </select>
+  </label>
+);

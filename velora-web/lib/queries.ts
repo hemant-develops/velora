@@ -184,11 +184,27 @@ export const searchActiveCars = async (
   }
 
   if (filters.seats === '5') {
-    query = query.lte('seats', 5);
+    query = query.gte('seats', 5);
   }
 
   if (filters.seats === '7plus') {
     query = query.gte('seats', 7);
+  }
+
+  if (filters.category) {
+    query = query.eq('category', filters.category);
+  }
+
+  if (filters.transmission) {
+    query = query.eq('transmission', filters.transmission);
+  }
+
+  if (filters.fuelType) {
+    query = query.eq('fuel_type', filters.fuelType);
+  }
+
+  if (filters.instantBook === true) {
+    query = query.eq('instant_book', true);
   }
 
   if (filters.location) {
@@ -512,5 +528,7 @@ export const getOwnerStoreBySlug = async (
     policies: row.policies ?? '',
     ownerName: row.owner_name || 'VELORA Owner',
     ownerAvatar: row.owner_avatar,
+    rating: Number(row.rating ?? 0),
+    reviewCount: Number(row.review_count ?? 0),
   };
 };

@@ -43,11 +43,17 @@ export interface PublicStore {
   policies: string;
   ownerName: string;
   ownerAvatar: string | null;
+  rating: number;
+  reviewCount: number;
 }
 
 export interface SearchFilters {
   q?: string;
   seats?: '5' | '7plus';
+  category?: string;
+  transmission?: string;
+  fuelType?: string;
+  instantBook?: boolean;
   minPrice?: number;
   maxPrice?: number;
   features?: string[];

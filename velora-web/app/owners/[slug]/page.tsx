@@ -3,6 +3,7 @@ import Image from "next/image";
 import { notFound } from "next/navigation";
 import { getOwnerStoreBySlug, getActiveCarsByOwner } from "@/lib/queries";
 import { CarCard } from "@/components/CarCard";
+import { Rating } from "@/components/Rating";
 import { SITE_URL } from "@/lib/site";
 
 type OwnerPageProps = {
@@ -55,6 +56,9 @@ export default async function OwnerPage({ params }: OwnerPageProps) {
             <p className="text-sm text-neutral-500">
               By {store.ownerName} · {cars.length} car{cars.length === 1 ? "" : "s"} listed on VELORA
             </p>
+            <div className="mt-2">
+              <Rating rating={store.rating} reviewCount={store.reviewCount} />
+            </div>
           </div>
         </div>
 

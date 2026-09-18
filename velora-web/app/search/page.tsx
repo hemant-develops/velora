@@ -14,6 +14,10 @@ const first = (v: string | string[] | undefined): string | undefined => (Array.i
 const parseFilters = (params: Record<string, string | string[] | undefined>): SearchFilters => {
   const q = first(params.q);
   const seatsRaw = first(params.seats);
+  const category = first(params.category);
+  const transmission = first(params.transmission);
+  const fuelType = first(params.fuelType);
+  const instantBookRaw = first(params.instantBook);
   const minPrice = first(params.minPrice);
   const maxPrice = first(params.maxPrice);
   const location = first(params.location);
@@ -24,6 +28,10 @@ const parseFilters = (params: Record<string, string | string[] | undefined>): Se
   return {
     q: q || undefined,
     seats: seatsRaw === "5" || seatsRaw === "7plus" ? seatsRaw : undefined,
+    category: category || undefined,
+    transmission: transmission || undefined,
+    fuelType: fuelType || undefined,
+    instantBook: instantBookRaw === 'true' ? true : undefined,
     minPrice: minPrice ? Number(minPrice) : undefined,
     maxPrice: maxPrice ? Number(maxPrice) : undefined,
     location: location || undefined,
