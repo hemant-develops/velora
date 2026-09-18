@@ -186,29 +186,11 @@ export const OwnerDashboardScreen: React.FC = () => {
     }
   };
 
-  // Every booking references its car only by carId (car.ownerId is how the
-  // owner is resolved — see BookingsContext) — there is no separate,
-  // duplicate ownerId stored on the booking itself. That's safe as long as
-  // a car with booking history can never disappear out from under it: once
-  // gone, getCarById(booking.carId) returns undefined everywhere (Booking
-  // Details, My Rents, Owner Dashboard), which silently breaks the
-  // owner/renter perspective on that booking (e.g. an owner's own past
-  // booking would render as if they were the renter). Rather than adding a
-  // redundant ownerId field to Booking, this guards the one place that
-  // could break that guarantee: permanently deleting a still-referenced
-  // car. A car with no booking history at all can still be removed
-  // outright; one with history is guided to the existing Active/Inactive
-  // toggle instead, which already preserves every booking untouched.
+  // Every booking references its car by carId. The remove action below is
+  // therefore always an archive, never a destructive delete: booking and
+  // review history stays attached while the listing disappears from active
+  // discovery.
   const onRemoveCar = (car: Car) => {
-    const carBookings = requests.filter((r) => r.carId === car.id);
-    if (carBookings.length > 0) {
-      Alert.alert(
-        'Cannot Remove This Listing',
-        'This car has booking history, so removing it would break those bookings. Turn it Inactive instead to hide it from renters while keeping your booking history intact.',
-        [{ text: 'OK' }],
-      );
-      return;
-    }
     Alert.alert('Archive Listing', `Hide ${car.name} from renters? This keeps your booking history intact while removing it from active search.`, [
       { text: 'Cancel', style: 'cancel' },
       {
