@@ -178,21 +178,19 @@ export const OwnerDashboardScreen: React.FC = () => {
       );
       return;
     }
-    Alert.alert('Remove Listing', `Remove ${car.name} from your listings? This cannot be undone.`, [
+    Alert.alert('Archive Listing', `Hide ${car.name} from renters? This keeps your booking history intact while removing it from active search.`, [
       { text: 'Cancel', style: 'cancel' },
       {
-        text: 'Remove',
+        text: 'Archive',
         style: 'destructive',
         onPress: () => {
-          // MULTI-DEVICE MIGRATION -- removeOwnerCar now deletes from
-          // Supabase and can genuinely throw (a network hiccup). Without
-          // this catch that was an unhandled promise rejection with no
-          // feedback -- the listing would appear to still be there with no
-          // explanation why "Remove" didn't seem to work.
+          // Soft-archive instead of hard-delete so bookings remain valid for
+          // historical records and the public marketplace simply stops
+          // showing the listing.
           removeOwnerCar(car.id).catch((err: unknown) => {
             const message = err instanceof Error ? err.message : 'Unknown error';
-            console.log(`VELORA_REMOVE_CAR_FAILED: ${message}`);
-            Alert.alert("Couldn't remove this listing", 'Please check your connection and try again.');
+            console.log(`VELORA_ARCHIVE_CAR_FAILED: ${message}`);
+            Alert.alert("Couldn't archive this listing", 'Please check your connection and try again.');
           });
         },
       },

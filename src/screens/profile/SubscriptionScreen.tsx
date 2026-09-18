@@ -77,6 +77,7 @@ export const SubscriptionScreen: React.FC<Props> = ({ navigation }) => {
   const { plan, loading: planLoading } = useActivePlan();
   const [purchasing, setPurchasing] = useState(false);
   const [error, setError] = useState<string | undefined>();
+  const isTestMode = (process.env.EXPO_PUBLIC_SUBSCRIPTION_MODE ?? '').toLowerCase() === 'test';
 
   if (!user) return null;
 
@@ -87,6 +88,24 @@ export const SubscriptionScreen: React.FC<Props> = ({ navigation }) => {
     setError(undefined);
     setPurchasing(true);
     try {
+      if (isTestMode) {
+        const result = await verifySubscriptionPayment({
+          orderId: 'TEST_MODE',
+          paymentId: 'TEST_MODE',
+          signature: 'TEST_MODE',
+        });
+
+        if (!result.success) {
+          setError(result.error);
+          return;
+        }
+
+        Alert.alert('Test subscription active', 'This is a controlled test activation for VELORA onboarding. You can now list your car.', [
+          { text: 'OK', onPress: () => navigation.goBack() },
+        ]);
+        return;
+      }
+
       const order = await createSubscriptionOrder();
       if (!order.success) {
         setError(order.error);
@@ -108,9 +127,6 @@ export const SubscriptionScreen: React.FC<Props> = ({ navigation }) => {
       try {
         checkoutResult = await RazorpayCheckout.open(options);
       } catch (checkoutErr) {
-        // RazorpayCheckout.open rejects both on a real failure AND on the
-        // person simply closing the payment sheet themselves -- neither is
-        // an app bug, so this is a quiet return, not an error banner.
         const description = (checkoutErr as ErrorResponse)?.description;
         if (description) console.log(`VELORA_SUBSCRIPTION_CHECKOUT_DISMISSED: ${description}`);
         return;
@@ -163,7 +179,9 @@ export const SubscriptionScreen: React.FC<Props> = ({ navigation }) => {
               {formatCurrency(plan.pricePaise / 100)}
               <Text style={styles.planPeriod}> / {formatDuration(plan.durationDays)}</Text>
             </Text>
-            <Text style={styles.planNote}>Introductory pricing — subject to change on renewal.</Text>
+            <Text style={styles.planNote}>
+              {isTestMode ? 'Test mode enabled — this is a controlled local activation for onboarding and QA.' : 'Introductory pricing — subject to change on renewal.'}
+            </Text>
 
             <View style={styles.benefitRow}>
               <Ionicons name="checkmark-circle" size={18} color={colors.success} />

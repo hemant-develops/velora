@@ -383,15 +383,22 @@ export const CarsProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const removeOwnerCar = async (carId: string) => {
-    // A real delete now that the listing lives centrally -- the matching
-    // local_car_inventory row (if any) is left exactly as it was before,
-    // same as the previous local-only behavior.
-    const { error } = await supabase.from('car_listings').delete().eq('id', carId);
+    // VELORA owner-store model: a car with booking history should never be
+    // hard-deleted because that breaks the booking record chain the app relies
+    // on. A delete from the owner dashboard is now an archive: the public
+    // marketplace hides it via `is_active = false`, while the existing booking
+    // rows and the owner's own history remain intact.
+    const current = allCars.find((c) => c.id === carId);
+    if (!current) {
+      throw new Error("This car couldn't be found. Pull to refresh and try again.");
+    }
+
+    const { error } = await supabase.from('car_listings').update({ is_active: false }).eq('id', carId);
     if (error) {
-      console.log(`VELORA_CAR_LISTINGS_DELETE_ERROR: ${error.message}`);
+      console.log(`VELORA_CAR_LISTINGS_ARCHIVE_ERROR: ${error.message}`);
       throw new Error(error.message);
     }
-    setAllCars((prev) => prev.filter((c) => c.id !== carId));
+    setAllCars((prev) => prev.map((c) => (c.id === carId ? { ...c, isActive: false } : c)));
   };
 
   // Recomputes a car's average rating using a simple running-average formula

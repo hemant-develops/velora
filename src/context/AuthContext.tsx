@@ -32,6 +32,26 @@ interface ProfileExtras {
 // Email-confirmation deep link. Must match app.json's `expo.scheme` ("velora")
 // and the Redirect URLs entry configured in the Supabase dashboard.
 const AUTH_CALLBACK_URL = 'velora://auth-callback';
+const TEST_SUBSCRIPTION_KEY = 'velora.testOwnerSubscription.v1';
+
+const isSubscriptionTestMode = (): boolean => (process.env.EXPO_PUBLIC_SUBSCRIPTION_MODE ?? '').toLowerCase() === 'test';
+
+const readTestSubscriptionOwners = async (): Promise<Set<string>> => {
+  try {
+    const raw = await storage.getItem(TEST_SUBSCRIPTION_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((value): value is string => typeof value === 'string' && !!value));
+  } catch (error) {
+    console.log(`VELORA_TEST_SUBSCRIPTION_READ_ERROR: ${error instanceof Error ? error.message : String(error)}`);
+    return new Set();
+  }
+};
+
+const writeTestSubscriptionOwners = async (ownerIds: Set<string>) => {
+  await storage.setItem(TEST_SUBSCRIPTION_KEY, JSON.stringify(Array.from(ownerIds)));
+};
 
 // Supabase's confirmation-link redirect can land tokens either in the URL
 // fragment (`#access_token=...&refresh_token=...`, the default "implicit"
@@ -319,6 +339,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // AND for the signed-out public website (see 0026_owner_subscriptions.sql)
   // -- neither ever sees the underlying payment rows, only this one boolean.
   const fetchSubscriptionStatus = async (userId: string): Promise<{ active: boolean; expiresAt?: string }> => {
+    if (isSubscriptionTestMode()) {
+      const ownerIds = await readTestSubscriptionOwners();
+      const active = ownerIds.has(userId);
+      return {
+        active,
+        expiresAt: active ? new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString() : undefined,
+      };
+    }
+
     const { data, error } = await supabase.rpc('has_active_subscription', { p_owner_id: userId });
     if (error) {
       console.log(`VELORA_SUBSCRIPTION_STATUS_FETCH_ERROR: ${error.message}`);
@@ -357,6 +386,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const createSubscriptionOrder = async (): Promise<
     { success: true; orderId: string; amount: number; currency: string; keyId: string } | { success: false; error: string }
   > => {
+    if (isSubscriptionTestMode()) {
+      return {
+        success: true,
+        orderId: `TEST_${Date.now()}`,
+        amount: 100,
+        currency: 'INR',
+        keyId: 'test-mode',
+      };
+    }
+
     const { data, error } = await supabase.functions.invoke('create-subscription-order');
     if (error) {
       console.log(`VELORA_CREATE_SUBSCRIPTION_ORDER_ERROR: ${error.message}`);
@@ -373,6 +412,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     paymentId: string;
     signature: string;
   }): Promise<AuthResult> => {
+    if (isSubscriptionTestMode()) {
+      if (!user) {
+        return { success: false, error: 'Please log in again to activate the test subscription.' };
+      }
+
+      const ownerIds = await readTestSubscriptionOwners();
+      ownerIds.add(user.id);
+      await writeTestSubscriptionOwners(ownerIds);
+      await refreshSubscriptionStatus();
+      return { success: true, info: 'Test subscription activated for onboarding.' };
+    }
+
     const { data, error } = await supabase.functions.invoke('verify-subscription-payment', { body: params });
     if (error) {
       console.log(`VELORA_VERIFY_SUBSCRIPTION_PAYMENT_ERROR: ${error.message}`);
