@@ -60,7 +60,9 @@ Deno.serve(async (req: Request) => {
     // pretending to be a different owner_id (the returned order carries no
     // owner_id anyway, but the *authenticated-ness* is what gates this
     // function from being called by a signed-out visitor at all).
-    const authClient = createClient(supabaseUrl, anonKey);
+    const authClient = createClient(supabaseUrl, anonKey, {
+      global: { headers: { Authorization: `Bearer ${token}` } },
+    });
     const {
       data: { user },
       error: userError,

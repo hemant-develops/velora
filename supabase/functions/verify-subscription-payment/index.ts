@@ -144,20 +144,55 @@ Deno.serve(async (req: Request) => {
     const order = await orderResponse.json();
     const planId = order?.notes?.plan_id;
     const amountPaise = order?.amount;
-    console.log(`VELORA_VERIFY_SUB_ORDER_LOOKUP httpStatus=${orderResponse.status} planId=${planId ?? 'none'} amountPresent=${amountPaise != null}`);
-    if (!orderResponse.ok || !planId || amountPaise == null) {
+    const orderOwnerId = order?.notes?.owner_id;
+    const orderPurpose = order?.notes?.purpose;
+    const orderCurrency = order?.currency;
+    console.log(
+      `VELORA_VERIFY_SUB_ORDER_LOOKUP httpStatus=${orderResponse.status} planId=${planId ?? 'none'} amountPresent=${amountPaise != null} ownerMatches=${orderOwnerId === user.id}`,
+    );
+    if (
+      !orderResponse.ok ||
+      !planId ||
+      amountPaise == null ||
+      orderPurpose !== 'owner_subscription' ||
+      orderOwnerId !== user.id ||
+      orderCurrency !== 'INR'
+    ) {
       return new Response(JSON.stringify({ error: 'Could not confirm the plan for this payment. Please contact support.' }), { status: 500 });
     }
 
-    const authedForPlan = createClient(supabaseUrl, anonKey);
+    const authedForPlan = createClient(supabaseUrl, anonKey, {
+      global: { headers: { Authorization: `Bearer ${token}` } },
+    });
     const { data: plan, error: planError } = await authedForPlan
       .from('subscription_plans')
-      .select('duration_days')
+      .select('price_paise, duration_days')
       .eq('id', planId)
       .maybeSingle();
     if (planError || !plan) {
       console.log(`VELORA_VERIFY_SUB_PLAN_LOOKUP_ERROR: ${planError?.message ?? 'plan not found'}`);
       return new Response(JSON.stringify({ error: 'Could not confirm the plan for this payment. Please contact support.' }), { status: 500 });
+    }
+    if (Number(plan.price_paise) !== Number(amountPaise)) {
+      console.log(`VELORA_VERIFY_SUB_AMOUNT_MISMATCH planId=${planId}`);
+      return new Response(JSON.stringify({ error: 'Payment amount does not match the active plan.' }), { status: 400 });
+    }
+
+    const paymentResponse = await fetch(`https://api.razorpay.com/v1/payments/${paymentId}`, {
+      headers: { Authorization: `Basic ${basicAuth}` },
+    });
+    const payment = await paymentResponse.json();
+    if (
+      !paymentResponse.ok ||
+      payment?.order_id !== orderId ||
+      payment?.currency !== 'INR' ||
+      Number(payment?.amount) !== Number(amountPaise) ||
+      payment?.status !== 'captured'
+    ) {
+      console.log(
+        `VELORA_VERIFY_SUB_PAYMENT_REJECTED httpStatus=${paymentResponse.status} orderMatches=${payment?.order_id === orderId} status=${payment?.status ?? 'none'}`,
+      );
+      return new Response(JSON.stringify({ error: 'Payment has not been captured or does not match this order.' }), { status: 400 });
     }
 
     // Service-role client -- deliberately bypasses owner_subscriptions' RLS
@@ -167,6 +202,22 @@ Deno.serve(async (req: Request) => {
     const admin = createClient(supabaseUrl, serviceRoleKey);
     const now = new Date();
     const expiresAt = new Date(now.getTime() + plan.duration_days * 24 * 60 * 60 * 1000);
+
+    const { data: existingOrder, error: existingOrderError } = await admin
+      .from('owner_subscriptions')
+      .select('owner_id, razorpay_payment_id, expires_at')
+      .eq('razorpay_order_id', orderId)
+      .maybeSingle();
+    if (existingOrderError) {
+      console.log(`VELORA_VERIFY_SUB_REPLAY_LOOKUP_ERROR: ${existingOrderError.message}`);
+      return new Response(JSON.stringify({ error: 'Could not confirm whether this payment was already activated.' }), { status: 500 });
+    }
+    if (existingOrder) {
+      if (existingOrder.owner_id === user.id && existingOrder.razorpay_payment_id === paymentId) {
+        return new Response(JSON.stringify({ success: true, expiresAt: existingOrder.expires_at }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ error: 'This payment order has already been processed.' }), { status: 409 });
+    }
 
     const { error: insertError } = await admin.from('owner_subscriptions').insert({
       owner_id: user.id,
